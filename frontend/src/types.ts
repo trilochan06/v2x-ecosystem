@@ -17,6 +17,7 @@ export interface VehicleState {
   segment_id: string | null;
   yielding: boolean;
   trust_hint: number;
+  reroute_count: number;
 }
 
 export interface Prediction {
@@ -76,10 +77,24 @@ export interface EventEntry {
   message: string;
 }
 
+export interface FogNodeState {
+  id: string;
+  x: number;
+  y: number;
+  member_rsu_ids: string[];
+  alert: boolean;
+  avg_occupancy: number;
+  incident_count: number;
+  vehicles_served: number;
+}
+
 export interface SimulationState {
   tick: number;
   grid_size: number;
   messages_this_tick: number;
+  reroutes_this_tick: number;
+  total_reroutes: number;
+  fog_nodes: FogNodeState[];
   segments: SegmentState[];
   vehicles: VehicleState[];
   rsus: RsuState[];

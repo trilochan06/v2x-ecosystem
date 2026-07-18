@@ -8,6 +8,9 @@ const TYPE_ICON: Record<string, string> = {
   rsu_recovered: "\u{1F7E2}",
   self_heal: "\u{1F501}",
   congestion_alert: "\u{1F6A6}",
+  fog_alert: "\u{1F32B}\u{FE0F}",
+  fog_recovered: "\u{2601}\u{FE0F}",
+  v2v_reroute: "\u{1F504}",
 };
 
 export function EventLog({ state }: { state: SimulationState }) {

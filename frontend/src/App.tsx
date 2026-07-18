@@ -4,6 +4,7 @@ import { CityMap } from "./components/CityMap";
 import { StatsBar } from "./components/StatsBar";
 import { ExplainPanel } from "./components/ExplainPanel";
 import { TrustPanel } from "./components/TrustPanel";
+import { FogPanel } from "./components/FogPanel";
 import { ControlConsole } from "./components/ControlConsole";
 import { EventLog } from "./components/EventLog";
 
@@ -35,6 +36,7 @@ export default function App() {
         </section>
         <aside className="side-panels">
           <ExplainPanel state={state} selectedSegment={selectedSegment} />
+          <FogPanel state={state} />
           <TrustPanel state={state} />
           <ControlConsole state={state} />
           <EventLog state={state} />
@@ -64,6 +66,15 @@ function Legend() {
       </span>
       <span>
         <i className="line dashed" /> active incident / corridor
+      </span>
+      <span>
+        <i className="dot" style={{ background: "#38bdf8" }} /> RSU tower
+      </span>
+      <span>
+        <i className="dot" style={{ background: "#f97316" }} /> fog hub (regional alert)
+      </span>
+      <span>
+        <i className="dot" style={{ background: "#a3e635" }} /> vehicle just rerouted (V2V)
       </span>
     </div>
   );

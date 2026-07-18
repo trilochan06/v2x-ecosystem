@@ -13,15 +13,18 @@ full vision; the rest is documented as a future-work roadmap
 ## System layers
 
 ```
-Vehicle Sensors -> Vehicle AI Agent -> Nearby Vehicles (gossip)
-                                    -> RSU Edge Server (edge AI)
-                                    -> RSU Network (self-healing, neighbor relay)
-                                    -> Cloud digest (bandwidth-bounded summary)
+Vehicle Sensors -> Vehicle AI Agent -> Nearby Vehicles (V2V gossip + occupancy sharing, local rerouting)
+                                    -> RSU Edge Server (edge AI, self-healing cell handover)
+                                    -> Fog Node (regional aggregation across an RSU cluster)
+                                    -> Cloud digest (bandwidth-bounded regional summary)
 Emergency corridor manager reaches across all layers when an ambulance is present.
 ```
 
 The cloud is one layer among many, not the brain: every layer above it can
-keep functioning on its own if the layers above go away.
+keep functioning on its own if the layers above go away. The fog tier adds a
+second hop of bandwidth reduction and lets the network reason across RSU
+cell boundaries (a single RSU can't see that its neighbor is jammed too; its
+fog node can).
 
 ## Module map (`backend/app/`)
 
@@ -30,9 +33,10 @@ keep functioning on its own if the layers above go away.
 | `simulation/world.py` | Synthetic city grid (N x N intersections + road segments), shortest-path routing, occupancy history |
 | `simulation/vehicle.py` | Vehicle agent: movement, hazard sensing, gossip message authoring. Includes a `malicious` kind that fabricates hazard reports, giving the trust layer something real to catch |
 | `simulation/rsu.py` | RSU edge node: local congestion inference, cloud digest generation |
+| `simulation/fog.py` | Fog computing tier: clusters RSUs geographically, aggregates their digests into a regional summary, raises a regional congestion alert |
 | `simulation/traffic_light.py` | Intersection signal with a normal cycle and an emergency-preemption override |
 | `simulation/engine.py` | Orchestrates one simulation tick across every layer below |
-| `network/messages.py` | Wire message schema (hazard report, congestion digest, emergency broadcast, yield instruction) |
+| `network/messages.py` | Wire message schema (hazard report, occupancy ping, congestion digest, emergency broadcast, yield instruction) |
 | `network/gossip.py` | `EtherBus`: V2V epidemic (flood/TTL) relay with per-node dedup, modeling physical radio range as hop-distance on the road graph |
 | `network/corroboration.py` | Network-wide hazard corroboration: independent confirmation flips a segment's incident flag and updates trust |
 | `network/security.py` | Simulated per-vehicle certificates (HMAC signing) and a corroboration-rate-based trust registry |
@@ -85,6 +89,38 @@ launder a bad one. This is still an approximation: a vehicle that is
 purely from low corroboration opportunity, not malice. A production system
 would fold in local vehicle density so "nobody was around to confirm" and
 "everybody around disagreed" are scored differently.
+
+**Fog computing tier: geographic clustering, not a real regional data
+center.** `simulation/fog.py` groups RSUs by physical proximity (sorted by
+grid coordinate before chunking, so a cluster is a contiguous district, not
+an arbitrary set of ids) into `FogNode`s. Each fog node aggregates its
+members' occupancy/incident data into one regional summary every
+`FOG_INTERVAL_TICKS` and raises a regional alert when the *cluster* average
+crosses a threshold -- something no individual RSU can see on its own,
+since it only has visibility into its own intersection. In this prototype
+the fog node's "action" on alert is limited to logging + a dashboard
+highlight; a production system would use it to coordinate signal timing or
+load-balance vehicles across the cluster's RSUs, which is a natural
+next step (see `ROADMAP.md`).
+
+**V2V congestion sharing uses only messages, never the shared world
+state directly.** This is a single-process simulation, so in principle any
+vehicle object could just read `grid.segments[...]` and know the occupancy
+of every road in the city -- but that would make "decentralized" a lie.
+To keep the demonstration honest, a vehicle's `known_occupancy` cache is
+populated *exclusively* by `receive_occupancy_ping`, called only when the
+message-passing layer (`EtherBus`, with the same hop-limited TTL as hazard
+gossip) actually delivers it a peer's `OCCUPANCY_PING`. Rerouting
+(`Vehicle._maybe_reroute`) only ever consults that cache, with a staleness
+cutoff and a per-vehicle cooldown so a vehicle doesn't thrash between two
+routes every tick. The one deliberate exception is a vehicle's *own current*
+segment: reading your own physical surroundings isn't remote knowledge, so
+that's a direct read, same as the incident-triggered speed penalty. The
+practical effect: when a large swath of the city congests at once, many
+vehicles can decide to reroute within the same few ticks -- a real
+"herding" effect naive congestion-based rerouting is known to cause (this
+is the same dynamic behind Waze-induced side-street congestion in the real
+world), not a bug in the demo.
 
 **Cybersecurity is simulated, not deployed.** Vehicle "certificates" are
 per-vehicle HMAC keys generated in-process (`network/security.py`), and

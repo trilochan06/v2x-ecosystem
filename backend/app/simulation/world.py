@@ -84,6 +84,13 @@ class CityGrid:
 
     def shortest_path(self, start: str, goal: str) -> list[str]:
         """Breadth-first search (uniform edge cost grid, so BFS = shortest path)."""
+        return self.shortest_path_avoiding(start, goal, avoid_segment_ids=frozenset())
+
+    def shortest_path_avoiding(self, start: str, goal: str, avoid_segment_ids: frozenset[str]) -> list[str]:
+        """Shortest path that routes around a set of segments a vehicle has
+        learned (via V2V gossip) are congested or blocked -- falls back to
+        the normal shortest path if no detour exists.
+        """
         if start == goal:
             return [start]
         visited = {start}
@@ -94,15 +101,34 @@ class CityGrid:
             for nxt in self.adjacency[node]:
                 if nxt in visited:
                     continue
+                if avoid_segment_ids and self.segment_between(node, nxt).id in avoid_segment_ids:
+                    continue
                 new_path = path + [nxt]
                 if nxt == goal:
                     return new_path
                 visited.add(nxt)
                 queue.append(new_path)
+        if avoid_segment_ids:
+            return self.shortest_path_avoiding(start, goal, avoid_segment_ids=frozenset())
         return [start]
 
     def all_segments(self) -> list[Segment]:
         return list(self.segments.values())
+
+    def adjacent_segments(self, segment: Segment) -> list[Segment]:
+        """Every other segment sharing an endpoint with `segment` -- the
+        real spillover neighborhood an RSU's own sensors can see, used as
+        the congestion model's `neighbor_avg` feature.
+        """
+        seen = {segment.id}
+        result = []
+        for node in (segment.a, segment.b):
+            for neighbor in self.adjacency[node]:
+                seg = self.segment_between(node, neighbor)
+                if seg.id not in seen:
+                    seen.add(seg.id)
+                    result.append(seg)
+        return result
 
     def decay_occupancy(self, factor: float = 0.9) -> None:
         for seg in self.segments.values():

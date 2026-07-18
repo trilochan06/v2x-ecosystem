@@ -20,6 +20,13 @@ VehicleKind = Literal["car", "ambulance", "malicious"]
 
 HAZARD_TYPES = ["fog", "accident", "pothole", "waterlogging", "oil_spill"]
 
+OCCUPANCY_PING_INTERVAL_TICKS = 4
+OCCUPANCY_PING_TTL_HOPS = 2
+PEER_INFO_STALE_TICKS = 15
+CONGESTION_REROUTE_THRESHOLD = 0.8
+REROUTE_COOLDOWN_TICKS = 25
+REROUTE_LOOKAHEAD_HOPS = 3
+
 
 @dataclass
 class Vehicle:
@@ -35,6 +42,14 @@ class Vehicle:
     comm_range_hops: int = 3
     yield_instruction: dict | None = None
     trust_hint: float = 1.0
+    # Peer-shared congestion knowledge (V2V), NOT read directly off the
+    # shared world state -- a vehicle only "knows" about a segment it
+    # hasn't personally driven if another vehicle told it, via a message,
+    # within the last few ticks. This is what makes the rerouting below a
+    # genuine decentralized decision rather than omniscient shortcut.
+    known_occupancy: dict[str, tuple[float, int]] = field(default_factory=dict)
+    reroute_count: int = 0
+    _reroute_cooldown_until: int = 0
 
     def __post_init__(self) -> None:
         if not self.destination:
@@ -67,10 +82,11 @@ class Vehicle:
         bx, by = self.grid.coords(nxt)
         return (ax + (bx - ax) * self.progress, ay + (by - ay) * self.progress)
 
-    def step(self, tick: int, dt_s: float = 1.0):
-        """Advance movement + sensing. Returns an outbound Message or None."""
+    def step(self, tick: int, dt_s: float = 1.0) -> tuple[list[Message], bool]:
+        """Advance movement + sensing. Returns (outbound messages, did_reroute)."""
         nxt = self.next_node
-        outbound: Message | None = None
+        outbound: list[Message] = []
+        rerouted = False
 
         if nxt is not None:
             seg = self.grid.segment_between(self.node, nxt)
@@ -92,9 +108,68 @@ class Vehicle:
                 if len(self.route) <= 1:
                     self._pick_new_destination()
 
-            outbound = self._maybe_sense(seg, tick)
+            hazard_msg = self._maybe_sense(seg, tick)
+            if hazard_msg is not None:
+                outbound.append(hazard_msg)
 
-        return outbound
+            ping_msg = self._maybe_share_occupancy(seg, tick)
+            if ping_msg is not None:
+                outbound.append(ping_msg)
+
+            rerouted = self._maybe_reroute(tick)
+
+        return outbound, rerouted
+
+    def receive_occupancy_ping(self, segment_id: str, occupancy: float, tick: int) -> None:
+        """Record a neighbor's self-reported occupancy for a segment this
+        vehicle hasn't necessarily driven itself -- this is the only way a
+        vehicle learns about a segment ahead of it.
+        """
+        self.known_occupancy[segment_id] = (occupancy, tick)
+
+    def _maybe_share_occupancy(self, seg, tick: int) -> Message | None:
+        if tick % OCCUPANCY_PING_INTERVAL_TICKS != 0:
+            return None
+        payload = {"segment_id": seg.id, "occupancy": round(seg.occupancy, 3)}
+        return Message(
+            type=MessageType.OCCUPANCY_PING,
+            sender_id=self.id,
+            payload=payload,
+            ttl=OCCUPANCY_PING_TTL_HOPS,
+            created_tick=tick,
+        )
+
+    def _maybe_reroute(self, tick: int) -> bool:
+        if self.kind == "ambulance":
+            return False  # priority vehicles keep the shortest path; they get right-of-way instead
+        if tick < self._reroute_cooldown_until:
+            return False
+        if len(self.route) < 3:
+            return False
+
+        upcoming_nodes = self.route[1 : REROUTE_LOOKAHEAD_HOPS + 2]
+        avoid: set[str] = set()
+        for i in range(len(upcoming_nodes) - 1):
+            seg = self.grid.segment_between(upcoming_nodes[i], upcoming_nodes[i + 1])
+            info = self.known_occupancy.get(seg.id)
+            if info is None:
+                continue
+            occupancy, heard_tick = info
+            if tick - heard_tick > PEER_INFO_STALE_TICKS:
+                continue
+            if occupancy >= CONGESTION_REROUTE_THRESHOLD:
+                avoid.add(seg.id)
+
+        if not avoid:
+            return False
+
+        new_route = self.grid.shortest_path_avoiding(self.node, self.destination, frozenset(avoid))
+        if new_route and new_route != self.route:
+            self.route = new_route
+            self._reroute_cooldown_until = tick + REROUTE_COOLDOWN_TICKS
+            self.reroute_count += 1
+            return True
+        return False
 
     def _maybe_sense(self, seg, tick: int) -> Message | None:
         if self.kind == "malicious":
@@ -143,4 +218,5 @@ class Vehicle:
             "segment_id": self.current_segment_id,
             "yielding": bool(self.yield_instruction),
             "trust_hint": self.trust_hint,
+            "reroute_count": self.reroute_count,
         }

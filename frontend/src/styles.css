@@ -127,6 +127,17 @@ body {
   to { stroke-dashoffset: -24; }
 }
 
+.reroute-ping {
+  animation: reroute-ping 1.4s ease-out;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+@keyframes reroute-ping {
+  0% { r: 8; opacity: 1; }
+  100% { r: 22; opacity: 0; }
+}
+
 .legend {
   display: flex;
   flex-wrap: wrap;
@@ -273,6 +284,51 @@ button:disabled {
   background: #450a0a;
   border-color: #7f1d1d;
   color: #fca5a5;
+}
+
+.fog-cluster-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.fog-cluster {
+  border: 1px solid #1f2937;
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #0f172a;
+}
+
+.fog-cluster.alert {
+  border-color: #9a3412;
+  background: #1c1006;
+}
+
+.fog-cluster-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.fog-badge {
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  background: #7c2d12;
+  color: #fed7aa;
+  padding: 2px 6px;
+  border-radius: 999px;
+}
+
+.fog-cluster-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.78rem;
 }
 
 .event-log {

@@ -8,12 +8,15 @@ vehicles, reactive-only traffic views) rather than claiming to already
 replace them.
 
 Every vehicle is simulated as a compute node that senses, gossips hazard
-reports to nearby vehicles, and reacts locally. Roadside Units (RSUs) are
-edge-AI nodes, not dumb repeaters: they corroborate reports, run a live
-congestion forecaster, self-heal when a neighboring RSU fails, and forward
-only compact digests to the cloud layer. An ambulance entering the network
-triggers a predictive emergency corridor -- traffic lights preempt and
-nearby vehicles get an explained yield instruction before it arrives.
+reports and live occupancy to nearby vehicles, and reroutes itself around
+congestion using only what its peers told it -- no cloud, no RSU involved.
+Roadside Units (RSUs) are edge-AI nodes, not dumb repeaters: they
+corroborate reports, run a live congestion forecaster, self-heal when a
+neighboring RSU fails, and forward only compact digests up to a fog
+computing tier, which aggregates a whole district's RSUs into one regional
+summary before anything reaches the cloud. An ambulance entering the
+network triggers a predictive emergency corridor -- traffic lights preempt
+and nearby vehicles get an explained yield instruction before it arrives.
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for what is implemented
 vs. simulated vs. left as a documented roadmap item, and
@@ -78,3 +81,10 @@ pytest
 - **Kill an RSU** to watch self-healing: vehicles in its cell are
   reassigned to the nearest surviving RSU within one tick, and gossip
   keeps propagating hazard reports vehicle-to-vehicle regardless.
+- **Watch vehicles reroute on their own** (small green ring flash + the
+  "V2V reroutes" counter climbing): they're avoiding segments a nearby peer
+  told them are jammed, using only V2V messages -- a genuine decentralized
+  decision, not an omniscient shortcut.
+- **Watch the Fog Computing panel** during heavy congestion: when a whole
+  district's RSUs are jammed at once (not just one intersection), its fog
+  cluster raises a regional alert, shown as a glowing hub on the map.

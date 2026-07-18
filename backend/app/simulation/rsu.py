@@ -31,7 +31,9 @@ class RSU:
 
     def run_prediction(self, predictor: CongestionPredictor, tick: int) -> None:
         for seg in self.local_segments():
-            self.predictions[seg.id] = predictor.predict(seg, tick)
+            neighbors = self.grid.adjacent_segments(seg)
+            neighbor_avg = sum(n.occupancy for n in neighbors) / len(neighbors) if neighbors else seg.occupancy
+            self.predictions[seg.id] = predictor.predict(seg, tick, neighbor_avg=neighbor_avg)
 
     def build_digest(self, tick: int, network: RSUNetwork) -> CloudDigest | None:
         if tick % DIGEST_INTERVAL_TICKS != 0:

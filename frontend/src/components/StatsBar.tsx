@@ -18,6 +18,13 @@ export function StatsBar({ state, connected }: { state: SimulationState; connect
       <Stat label="Quarantined nodes" value={quarantined} warn={quarantined > 0} />
       <Stat label="Avg trust" value={avgTrust.toFixed(2)} />
       <Stat label="Active corridors" value={state.active_corridors.length} warn={state.active_corridors.length > 0} />
+      <Stat label="Fog clusters" value={state.fog_nodes.length} />
+      <Stat
+        label="Regional alerts"
+        value={state.fog_nodes.filter((f) => f.alert).length}
+        warn={state.fog_nodes.some((f) => f.alert)}
+      />
+      <Stat label="V2V reroutes (total)" value={state.total_reroutes} />
     </div>
   );
 }
