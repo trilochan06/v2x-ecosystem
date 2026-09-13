@@ -135,6 +135,16 @@ npx vercel --prod
 Any static host works (Netlify, GitHub Pages, S3); just serve `frontend/dist` and
 rewrite unknown paths to `index.html` for client-side routing.
 
+If the host *cannot* rewrite — plain object storage, or a bundle served from a
+sub-path — build in hash mode instead, which needs no server-side routing at all:
+
+```bash
+cd frontend && VITE_ROUTER=hash VITE_BASE=./ npm run build
+```
+
+That emits relative asset URLs and routes on `#/control`, `#/experiments` and so
+on, so a deep link survives a reload anywhere.
+
 ### Python backend — the research artifact
 
 The FastAPI engine under `backend/` remains the reference implementation and is
