@@ -133,6 +133,37 @@ export function Federated() {
       </div>
 
       <section className="panel wide">
+        <h2>Trust-weighted aggregation</h2>
+        <p className="muted">
+          Plain FedAvg weights each roadside unit purely by how much data it has — which is the
+          wrong instinct when some of that data came from vehicles the network does not believe.
+          The busiest compromised RSU would get the loudest vote. Here each training sample is
+          believed in proportion to the corroboration-derived trust of the vehicle that reported
+          it, and a client whose sources fall below the floor is excluded from the round outright.
+          This is the one place M11 (security) feeds M7 (learning).
+        </p>
+        <div className="statbar">
+          <Stat label="Trust-weighted loss" value={fed.current_loss.toFixed(5)} />
+          <Stat label="Plain FedAvg would be" value={fed.plain_fedavg_loss.toFixed(5)} />
+          <Stat
+            label="Difference"
+            value={`${fed.trust_weighting_gain_pct >= 0 ? "+" : ""}${fed.trust_weighting_gain_pct}%`}
+          />
+          <Stat label="Mean source trust" value={fed.mean_client_trust.toFixed(3)} />
+          <Stat label="Rounds with exclusions" value={fed.rounds_with_exclusions} />
+        </div>
+        <p className="muted small">
+          Both models are aggregated every round from the same client updates, so the comparison is
+          like-for-like. Read it honestly: with no attackers present the two are within noise of
+          each other, which is the correct outcome — the defence should cost nothing when there is
+          nothing to defend against. Inject attackers on the Control Centre and watch mean source
+          trust fall. Across five seeds the measured benefit under attack was +0.31% and under
+          heavy attack the variance swamped it, so this is reported as a mechanism that works as
+          specified rather than as a demonstrated win.
+        </p>
+      </section>
+
+      <section className="panel wide">
         <h2>Why this is the privacy argument, concretely</h2>
         <div className="two-col">
           <div>

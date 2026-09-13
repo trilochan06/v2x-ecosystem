@@ -1,5 +1,13 @@
 import { useState } from "react";
-import { DEFAULT_REPEATS, SCENARIOS, runSuite } from "../sim/experiments";
+import { DEFAULT_REPEATS, SCENARIOS } from "../sim/experiments";
+import { useSweep } from "../sim/useSweep";
+import {
+  copyToClipboard,
+  downloadText,
+  suiteFilename,
+  suiteToCsv,
+  suiteToJson,
+} from "../sim/exportResults";
 import { BarComparison } from "../components/charts/BarComparison";
 import { SERIES_COLORS } from "../components/charts/palette";
 import type { ExperimentSuite, Scenario } from "../types";
@@ -20,27 +28,11 @@ export function Experiments() {
   const [ticks, setTicks] = useState(250);
   const [seed, setSeed] = useState(4242);
   const [repeats, setRepeats] = useState(DEFAULT_REPEATS);
-  const [suite, setSuite] = useState<ExperimentSuite | null>(null);
-  const [running, setRunning] = useState(false);
-  const [progress, setProgress] = useState({ done: 0, total: 0 });
-  const [error, setError] = useState<string | null>(null);
+  // The sweep runs in a worker, so the page stays interactive while 15
+  // simulations grind away and the user can change their mind.
+  const { suite, running, done, total, error, run: startSweep, cancel } = useSweep();
 
-  const run = async () => {
-    setRunning(true);
-    setError(null);
-    setProgress({ done: 0, total: 3 * repeats });
-    // Yield once so the button repaints as "running" before the sweep blocks
-    // the main thread.
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    try {
-      setSuite(runSuite(scenario, ticks, seed, repeats));
-    } catch (e) {
-      console.error(e);
-      setError("The sweep failed to run.");
-    } finally {
-      setRunning(false);
-    }
-  };
+  const run = () => startSweep({ scenarioKey: scenario, ticks, seed, repeats });
 
   const labels = suite ? suite.runs.map((r) => SHORT[r.config.key] ?? r.config.label) : [];
   const series = (pick: (r: ExperimentSuite["runs"][number]) => number) =>
@@ -97,15 +89,27 @@ export function Experiments() {
           </select>
         </div>
         <button className="btn primary" onClick={run} disabled={running}>
-          {running ? `Running ${progress.total} simulations…` : "Run the sweep"}
+          {running ? `Running ${done} of ${total}…` : "Run the sweep"}
         </button>
+        {running && (
+          <button className="btn" onClick={cancel}>
+            Cancel
+          </button>
+        )}
       </section>
 
-      {running && progress.total > 0 && (
+      {running && total > 0 && (
         <div className="notice" role="status" aria-live="polite">
-          Running {progress.total} simulations — {repeats} seed{repeats === 1 ? "" : "s"} for each of
-          the three architectures. The engine runs in this tab, so the page will be unresponsive
-          until it finishes.
+          <div className="sweep-progress">
+            <div className="sweep-bar">
+              <div className="sweep-fill" style={{ width: `${(done / total) * 100}%` }} />
+            </div>
+            <span className="sweep-count">
+              {done} / {total} simulations
+            </span>
+          </div>
+          {repeats} seed{repeats === 1 ? "" : "s"} for each of the three architectures, running on a
+          background thread — the page stays usable and you can cancel.
         </div>
       )}
 
@@ -185,6 +189,8 @@ export function Experiments() {
               </p>
             )}
           </section>
+
+          <ExportBar suite={suite} />
 
           <div className="chart-grid">
             <BarComparison
@@ -350,5 +356,55 @@ function Row({
         <td key={r.config.key}>{pick(r)}</td>
       ))}
     </tr>
+  );
+}
+
+/** Results are no use trapped on a screen. Copy is the primary action because
+ *  a hosted artifact blocks downloads the page starts itself. */
+function ExportBar({ suite }: { suite: ExperimentSuite }) {
+  const [note, setNote] = useState<string | null>(null);
+
+  const copy = async (text: string, what: string) => {
+    setNote(
+      (await copyToClipboard(text))
+        ? `${what} copied — paste it straight into your report.`
+        : "Copying was blocked by the browser. Try the download instead.",
+    );
+  };
+
+  const save = (text: string, extension: string, mime: string) => {
+    const ok = downloadText(suiteFilename(suite, extension), text, mime);
+    setNote(
+      ok
+        ? `Saved ${suiteFilename(suite, extension)}.`
+        : "This viewer blocks downloads. Use copy instead — the data is identical.",
+    );
+  };
+
+  return (
+    <section className="panel wide export-bar">
+      <div>
+        <h2>Take the results with you</h2>
+        <p className="muted small">
+          Every configuration and metric with its mean, 95% interval and sample count.
+        </p>
+      </div>
+      <div className="export-actions">
+        <button className="btn" onClick={() => copy(suiteToCsv(suite), "CSV")}>
+          Copy CSV
+        </button>
+        <button className="btn" onClick={() => copy(suiteToJson(suite), "JSON")}>
+          Copy JSON
+        </button>
+        <button className="btn" onClick={() => save(suiteToCsv(suite), "csv", "text/csv")}>
+          Download CSV
+        </button>
+      </div>
+      {note && (
+        <p className="muted small export-note" role="status" aria-live="polite">
+          {note}
+        </p>
+      )}
+    </section>
   );
 }

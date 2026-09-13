@@ -5,6 +5,8 @@ import { CityMap } from "../components/CityMap";
 import { ExplainPanel } from "../components/ExplainPanel";
 import { EventLog } from "../components/EventLog";
 import { FogPanel } from "../components/FogPanel";
+import { Toaster } from "../components/Toaster";
+import { useToaster } from "../components/useToaster";
 import type { ArchitectureConfigState, SimulationState } from "../types";
 
 export function ControlCenter() {
@@ -12,8 +14,54 @@ export function ControlCenter() {
   const [selectedSegment, setSelectedSegment] = useState<string | null>(null);
   const configs: ArchitectureConfigState[] = Object.values(CONFIGS);
   const busy = false;
+  const { toasts, push, dismiss } = useToaster();
 
-  const run = (fn: () => unknown) => fn();
+  // Name what happened and put the map on it, so a click is visibly a click.
+  const readable = (segmentId: string) => segmentId.replace("_", " \u2192 ");
+
+  const onInjectHazard = () => {
+    const segmentId = commands.injectHazard();
+    if (!segmentId) {
+      push("Every road already has a hazard on it.", "warn");
+      return;
+    }
+    setSelectedSegment(segmentId);
+    push(`Hazard injected on ${readable(segmentId)} — watch it turn amber when peers corroborate it.`, "warn");
+  };
+
+  const onSpawn = (kind: "car" | "ambulance" | "malicious") => {
+    const id =
+      kind === "car"
+        ? commands.spawnVehicle()
+        : kind === "ambulance"
+          ? commands.spawnAmbulance()
+          : commands.spawnMalicious();
+    const blurb = {
+      car: `Vehicle ${id} joined the network.`,
+      ambulance: `Ambulance ${id} dispatched — it will request priority at each signal ahead.`,
+      malicious: `Attacker ${id} joined — watch its trust fall on the Security page.`,
+    }[kind];
+    push(blurb, kind === "malicious" ? "bad" : kind === "ambulance" ? "good" : "info");
+  };
+
+  const onToggleCloud = () => {
+    const online = !state?.cloud_online;
+    commands.setCloud(online);
+    push(
+      online
+        ? "Cloud uplink restored."
+        : "Cloud uplink severed — the edge keeps operating. Switch to Exp 1 and try again to see the difference.",
+      online ? "good" : "warn",
+    );
+  };
+
+  const onToggleRsu = (rsuId: string, alive: boolean) => {
+    commands.toggleRsu(rsuId, alive);
+    push(
+      alive ? `${rsuId} restored.` : `${rsuId} knocked out — its vehicles will re-home to a neighbour.`,
+      alive ? "good" : "warn",
+    );
+  };
 
   if (!state) {
     return (
@@ -64,6 +112,13 @@ export function ControlCenter() {
         <Stat label="Uplink" value={`${m.communication.uplink_kilobytes_per_tick} KB/t`} />
         <Stat label="Detection F1" value={m.detection.f1.toFixed(2)} />
         <Stat label="V2V reroutes" value={state.total_reroutes} />
+        {state.signal_priority.requested > 0 && (
+          <Stat
+            label="Signal priority"
+            value={`${state.signal_priority.grant_rate_pct}%`}
+            warn={state.signal_priority.grant_rate_pct < 80}
+          />
+        )}
       </div>
 
       <div className="control-body">
@@ -81,17 +136,21 @@ export function ControlCenter() {
         </section>
 
         <aside className="side">
+          {/* The feed is the running record of what every control did, so it
+              belongs above the fold rather than below four other panels. */}
+          <EventLog state={state} />
+
           <div className="panel">
             <h2>Scenario controls</h2>
             <div className="btn-col">
-              <button disabled={busy} onClick={() => run(commands.injectHazard)}>Inject road hazard</button>
-              <button disabled={busy} onClick={() => run(commands.spawnAmbulance)}>Dispatch ambulance</button>
-              <button disabled={busy} onClick={() => run(commands.spawnMalicious)}>Inject attacker</button>
-              <button disabled={busy} onClick={() => run(commands.spawnVehicle)}>Add vehicle</button>
+              <button disabled={busy} onClick={onInjectHazard}>Inject road hazard</button>
+              <button disabled={busy} onClick={() => onSpawn("ambulance")}>Dispatch ambulance</button>
+              <button disabled={busy} onClick={() => onSpawn("malicious")}>Inject attacker</button>
+              <button disabled={busy} onClick={() => onSpawn("car")}>Add vehicle</button>
               <button
                 disabled={busy}
                 className={state.cloud_online ? "" : "danger"}
-                onClick={() => run(() => commands.setCloud(!state.cloud_online))}
+                onClick={onToggleCloud}
               >
                 {state.cloud_online ? "Sever cloud uplink" : "Restore cloud uplink"}
               </button>
@@ -103,7 +162,7 @@ export function ControlCenter() {
                   key={rsu.id}
                   disabled={busy}
                   className={rsu.alive ? "rsu-btn" : "rsu-btn down"}
-                  onClick={() => run(() => commands.toggleRsu(rsu.id, !rsu.alive))}
+                  onClick={() => onToggleRsu(rsu.id, !rsu.alive)}
                 >
                   {rsu.id} · {rsu.alive ? "up" : "DOWN"}
                 </button>
@@ -128,10 +187,29 @@ export function ControlCenter() {
             </p>
           </div>
 
+          {state.signal_priority.requested > 0 && (
+            <div className="panel">
+              <h2>Signal priority (SREM / SSEM)</h2>
+              <dl className="kv">
+                <div><dt>Requested</dt><dd>{state.signal_priority.requested}</dd></div>
+                <div><dt>Granted</dt><dd>{state.signal_priority.granted}</dd></div>
+                <div><dt>Never heard</dt><dd>{state.signal_priority.unheard}</dd></div>
+                <div><dt>Grant rate</dt><dd>{state.signal_priority.grant_rate_pct}%</dd></div>
+              </dl>
+              <p className="muted small">
+                An ambulance asks each intersection ahead for priority with an SREM and the
+                junction answers with an SSEM. Because the ask travels over a lossy radio it can
+                go unheard — a direct function call could not, which is exactly why the corridor
+                used to look perfectly reliable.
+              </p>
+            </div>
+          )}
+
           <MessageMix state={state} />
-          <EventLog state={state} />
         </aside>
       </div>
+
+      <Toaster toasts={toasts} dismiss={dismiss} />
     </div>
   );
 }

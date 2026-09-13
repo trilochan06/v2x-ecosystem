@@ -83,6 +83,10 @@ export interface FederatedRound {
   weights_kilobytes: number;
   raw_kilobytes_avoided: number;
   avg_client_drift: number;
+  /** What plain FedAvg would have produced, so the defence is measured. */
+  plain_fedavg_loss: number;
+  mean_client_trust: number;
+  excluded_clients: string[];
 }
 
 export interface FederatedState {
@@ -95,6 +99,11 @@ export interface FederatedState {
   total_raw_kilobytes_avoided: number;
   latest_round: FederatedRound | null;
   history: FederatedRound[];
+  plain_fedavg_loss: number;
+  trust_weighting_gain_pct: number;
+  mean_client_trust: number;
+  excluded_clients: string[];
+  rounds_with_exclusions: number;
   weights: { features: string[]; coefficients: number[]; intercept: number };
 }
 
@@ -218,6 +227,13 @@ export interface SimulationState {
   };
   metrics: MetricsSummary;
   active_corridors: string[];
+  /** SREM/SSEM outcomes. `unheard` is the interesting one. */
+  signal_priority: {
+    requested: number;
+    granted: number;
+    unheard: number;
+    grant_rate_pct: number;
+  };
   handovers: { tick: number; vehicle_id: string; from: string; to: string; reason: string }[];
   events: EventEntry[];
 }

@@ -208,7 +208,13 @@ class Vehicle:
     def _maybe_share_occupancy(self, seg, tick: int) -> Message | None:
         if tick % OCCUPANCY_PING_INTERVAL_TICKS != 0:
             return None
-        payload = {"segment_id": seg.id, "occupancy": round(seg.occupancy, 3)}
+        # An attacker's CAM is where false *traffic state* enters the network.
+        # Its hazard DENMs are caught by corroboration; this is the quieter
+        # channel, and it is the one that reaches the training data.
+        reported = seg.occupancy
+        if self.kind == "malicious":
+            reported = 1.0 - seg.occupancy
+        payload = {"segment_id": seg.id, "occupancy": round(reported, 3)}
         return Message(
             type=MessageType.CAM,
             sender_id=self.id,

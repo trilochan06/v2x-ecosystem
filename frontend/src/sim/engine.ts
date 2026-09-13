@@ -19,6 +19,7 @@ import {
   HAZARD_TYPES,
   MESSAGE_SPECS,
   Message,
+  SIGNAL_REQUEST_STATUS,
   Rng,
   backhaulBytes,
   makeMessage,
@@ -39,6 +40,11 @@ import type { ArchitectureConfigState, SimulationState } from "../types";
 
 // ------------------------------------------------------------ metrics
 const CONGESTION_THRESHOLD = 0.7;
+/** SPaT is broadcast continuously in the field (1-10 Hz). A tick here is much
+ *  coarser than 100 ms, so this is the equivalent duty cycle, not the rate. */
+const SPAT_BROADCAST_INTERVAL_TICKS = 4;
+/** A priority request only needs to reach the junction just ahead. */
+const SIGNAL_REQUEST_TTL_HOPS = 2;
 
 export class MetricsCollector {
   packetsIntended = 0;
@@ -279,6 +285,11 @@ export class SimulationEngine {
   authority: PseudonymAuthority;
   replayGuard = new ReplayGuard();
   certPolicy = new CertificateAttachmentPolicy();
+  /** SREM/SSEM outcomes. `unheard` is the interesting one: the request was
+   *  made and nobody received it. */
+  signalRequests = { requested: 0, granted: 0, unheard: 0 };
+  /** intersection node -> the RSU whose radio serves it. */
+  private rsuAt = new Map<string, string>();
   twin: DigitalTwin;
   alerts: AlertEngine;
   corridor: EmergencyCorridorManager;
@@ -325,6 +336,7 @@ export class SimulationEngine {
     for (const [i, node] of this.evenlySpacedNodes(this.numRsus).entries()) {
       const id = `rsu-${i + 1}`;
       this.rsus.set(id, new RSU(id, node, this.grid));
+      this.rsuAt.set(node, id);
       this.rsuNetwork.register(id, node);
       this.bus.register(id);
       this.trafficLights.set(node, new TrafficLight(`light-${node}`, node));
@@ -517,6 +529,12 @@ export class SimulationEngine {
         if (rsu?.alive) {
           rsu.messagesHandled += 1;
           if (msg.type === "denm-hazard") seen.set(msg.id, { senderId: vehicle.id, msg });
+          else if (msg.type === "cam")
+            rsu.reportedOccupancy.set(String(msg.payload.segment_id), {
+              occupancy: Number(msg.payload.occupancy),
+              tick: this.tick,
+              trust: this.trust.score(vehicle.id),
+            });
         } else if (msg.type === "cam") {
           this.vehicles
             .get(nodeIdent)
@@ -635,7 +653,8 @@ export class SimulationEngine {
       if (!rsu.alive) continue;
       if (runInference)
         rsu.runPrediction(this.predictor, this.tick, this.config.federated_learning, this.explainPredictions);
-      if (this.config.federated_learning) rsu.collectTrainingSamples(this.predictor, this.tick);
+      if (this.config.federated_learning)
+        rsu.collectTrainingSamples(this.predictor, this.tick, this.cellTrust(rsu.id));
     }
 
     if (this.config.federated_learning && this.tick % FL_ROUND_INTERVAL_TICKS === 0) {
@@ -682,10 +701,25 @@ export class SimulationEngine {
     for (const light of this.trafficLights.values()) light.step(this.tick);
 
     const ambulances = [...this.vehicles.values()].filter((v) => v.kind === "ambulance");
+    if (this.config.v2v_enabled) this.broadcastSpat();
+
     if (ambulances.length && this.config.emergency_corridor && serviceUp) {
       this.corridor.step(this.tick, ambulances, [...this.vehicles.values()], this.trafficLights);
       this.transmitCorridorFrames();
+      this.exchangeSignalPriority();
     }
+  }
+
+  /** Transmit one frame and pay for it. Returns who decoded it. */
+  private putOnAir(frame: Message, originNode: string, recipients: RecipientHandle[]): string[] {
+    frame.certificateAttached = this.certPolicy.attach(frame.pseudonym || frame.senderId);
+    const load = this.channelLoad(originNode);
+    const { delivered, intended } = this.bus.broadcast(frame, originNode, this.tick, recipients, load);
+    const bytes = messageBytes(frame);
+    this.messagesThisTick += delivered.length;
+    this.bytesThisTick += bytes;
+    this.metrics.recordBroadcast(intended, delivered.length, bytes, MESSAGE_SPECS[frame.type].designator);
+    return delivered;
   }
 
   /** Put the corridor's DENMs on the air and pay for them. These frames used
@@ -697,14 +731,119 @@ export class SimulationEngine {
     for (const frame of frames) {
       const origin = this.vehicles.get(frame.senderId);
       if (!origin) continue;
-      frame.certificateAttached = this.certPolicy.attach(frame.pseudonym || frame.senderId);
-      const load = this.channelLoad(origin.node);
-      const { delivered, intended } = this.bus.broadcast(frame, origin.node, this.tick, recipients, load);
-      const bytes = messageBytes(frame);
-      this.messagesThisTick += delivered.length;
-      this.bytesThisTick += bytes;
-      this.metrics.recordBroadcast(intended, delivered.length, bytes, MESSAGE_SPECS[frame.type].designator);
+      this.putOnAir(frame, origin.node, recipients);
     }
+  }
+
+  /**
+   * Every signalised intersection announces its phase (TS 103 301).
+   *
+   * SPaT is never relayed — it describes one junction and is only useful to
+   * vehicles approaching it — so it goes out at TTL 1.
+   */
+  private broadcastSpat() {
+    if (this.tick % SPAT_BROADCAST_INTERVAL_TICKS !== 0) return;
+    const recipients = this.recipientHandles();
+    for (const light of this.trafficLights.values()) {
+      const rsuId = this.rsuAt.get(light.node);
+      // The roadside radio is what transmits it. No radio, no SPaT.
+      if (!rsuId || !this.rsus.get(rsuId)?.alive) continue;
+      this.putOnAir(
+        makeMessage({
+          type: "spatem",
+          senderId: light.id,
+          pseudonym: "",
+          payload: { intersection: light.node, phase: light.phase },
+          ttl: 1,
+          createdTick: this.tick,
+          signed: false,
+        }),
+        light.node,
+        recipients,
+      );
+    }
+  }
+
+  /**
+   * SREM out, SSEM back (TS 103 301).
+   *
+   * A direct method call always lands. A radio message does not: this one can
+   * be lost on the air, and the intersection can refuse it. Both are things a
+   * real deployment copes with and a function call hides.
+   */
+  private exchangeSignalPriority() {
+    const requests = this.corridor.drainRequests();
+    if (!requests.length) return;
+    const recipients = this.recipientHandles();
+
+    for (const req of requests) {
+      const ambulance = this.vehicles.get(req.ambulanceId);
+      const light = this.trafficLights.get(req.intersection);
+      if (!ambulance || !light) continue;
+
+      this.signalRequests.requested += 1;
+      const delivered = this.putOnAir(
+        makeMessage({
+          type: "srem",
+          senderId: ambulance.id,
+          pseudonym: ambulance.pseudonym,
+          payload: {
+            request_id: req.requestId,
+            intersection: req.intersection,
+            eta_seconds: req.etaSeconds,
+          },
+          ttl: SIGNAL_REQUEST_TTL_HOPS,
+          createdTick: this.tick,
+          signed: true,
+        }),
+        ambulance.node,
+        recipients,
+      );
+
+      const rsuId = this.rsuAt.get(req.intersection);
+      const heard = !!rsuId && delivered.includes(rsuId) && !!this.rsus.get(rsuId)?.alive;
+      if (!heard) {
+        // Out of range, the frame collided, or the roadside unit is down.
+        // The light simply never learns it was asked.
+        this.signalRequests.unheard += 1;
+        continue;
+      }
+
+      light.preempt(this.tick, req.holdTicks, `${ambulance.id} ETA ${req.etaSeconds}s`);
+      this.signalRequests.granted += 1;
+      this.putOnAir(
+        makeMessage({
+          type: "ssem",
+          senderId: light.id,
+          pseudonym: "",
+          payload: {
+            request_id: req.requestId,
+            intersection: req.intersection,
+            status: SIGNAL_REQUEST_STATUS.GRANTED,
+          },
+          ttl: SIGNAL_REQUEST_TTL_HOPS,
+          createdTick: this.tick,
+          signed: false,
+        }),
+        light.node,
+        recipients,
+      );
+    }
+  }
+
+  /**
+   * Mean trust of the vehicles currently homed to this RSU.
+   *
+   * This is the link between M11 and M7: an RSU whose cell is full of vehicles
+   * the network has stopped believing is an RSU whose training data should not
+   * be averaged in at full weight.
+   */
+  private cellTrust(rsuId: string): number {
+    const scores: number[] = [];
+    for (const [vid, cell] of this.rsuNetwork.vehicleCell)
+      if (cell === rsuId && this.vehicles.has(vid)) scores.push(this.trust.score(vid));
+    if (!scores.length) return 1;
+    return scores.reduce((a, b) => a + b, 0) / scores.length;
   }
 
   private hazardLifecycle() {
@@ -762,6 +901,11 @@ export class SimulationEngine {
       alerts: this.alerts.snapshot(),
       metrics: this.metrics.summary(),
       active_corridors: [...this.corridor.activeCorridors],
+      signal_priority: {
+        ...this.signalRequests,
+        grant_rate_pct:
+          Math.round((1000 * this.signalRequests.granted) / Math.max(this.signalRequests.requested, 1)) / 10,
+      },
       handovers: this.rsuNetwork.handoverLog.slice(-20),
       events: [...this.eventLog].slice(-40).reverse(),
     } as SimulationState;

@@ -158,12 +158,22 @@ function predictLinear(weights: Weights, x: number[]): number {
   return acc;
 }
 
+/**
+ * A client whose data came from vehicles this far below full trust is kept
+ * out of the round entirely. Set well above the quarantine threshold: by the
+ * time corroboration has pushed a source this low, its road state is not
+ * worth averaging in at any weight.
+ */
+export const TRUST_EXCLUSION_FLOOR = 0.5;
+
 export class FederatedClient {
   weights: Weights = zeroWeights();
   samplesContributed = 0;
   roundsJoined = 0;
   lastDrift = 0;
-  private buffer: { x: number[]; y: number }[] = [];
+  /** Mean trust of the vehicles whose reports produced the current buffer. */
+  dataTrust = 1;
+  private buffer: { x: number[]; y: number; trust: number }[] = [];
 
   constructor(readonly rsuId: string) {}
 
@@ -171,23 +181,36 @@ export class FederatedClient {
     return this.buffer.length;
   }
 
-  /** Local observations stay here permanently — never uploaded. */
-  observe(x: number[], y: number) {
-    this.buffer.push({ x, y });
+  /**
+   * Local observations stay here permanently — never uploaded.
+   *
+   * `sourceTrust` is how much the corroboration layer believes the vehicles
+   * that produced this road state. It travels with the sample so aggregation
+   * can discount a client whose view was built from unconfirmed reports.
+   */
+  observe(x: number[], y: number, sourceTrust = 1) {
+    this.buffer.push({ x, y, trust: sourceTrust });
     if (this.buffer.length > BUFFER_LIMIT) this.buffer.shift();
+    this.dataTrust = this.buffer.reduce((a, s) => a + s.trust, 0) / this.buffer.length;
   }
 
-  localTrain(): { weights: Weights; n: number } | null {
+  localTrain(): { weights: Weights; n: number; trust: number } | null {
     if (this.buffer.length < MIN_SAMPLES_PER_ROUND) return null;
     const n = this.buffer.length;
     const w = [...this.weights.w];
     let b = this.weights.b;
 
+    // Believe each sample in proportion to its source. A fabricated road
+    // state still enters the buffer — the RSU cannot tell at receipt — but it
+    // pulls the local model far less than a corroborated one.
+    const trustSum = this.buffer.reduce((a, s2) => a + s2.trust, 0);
+    const trustMean = trustSum > 0 ? trustSum / this.buffer.length : 1;
+
     for (let epoch = 0; epoch < LOCAL_EPOCHS; epoch++) {
       const grad = new Array(FEATURE_DIM).fill(0);
       let gradB = 0;
-      for (const { x, y } of this.buffer) {
-        const err = predictLinear({ w, b }, x) - y;
+      for (const { x, y, trust } of this.buffer) {
+        const err = (predictLinear({ w, b }, x) - y) * (trustSum > 0 ? trust / trustMean : 1);
         for (let i = 0; i < FEATURE_DIM; i++) grad[i] += err * x[i];
         gradB += err;
       }
@@ -198,7 +221,7 @@ export class FederatedClient {
     this.weights = { w, b };
     this.samplesContributed += n;
     this.roundsJoined += 1;
-    return { weights: { w: [...w], b }, n };
+    return { weights: { w: [...w], b }, n, trust: this.dataTrust };
   }
 
   /** Adopt the aggregated model, recording how far local training had drifted
@@ -229,10 +252,16 @@ export interface RoundSummary {
   weights_kilobytes: number;
   raw_kilobytes_avoided: number;
   avg_client_drift: number;
+  /** What plain FedAvg would have produced, so the defence is measured. */
+  plain_fedavg_loss: number;
+  mean_client_trust: number;
+  excluded_clients: string[];
 }
 
 export class FederatedCoordinator {
   globalWeights: Weights = zeroWeights();
+  /** Shadow model aggregated by plain FedAvg, for comparison only. */
+  plainWeights: Weights = zeroWeights();
   rounds: RoundSummary[] = [];
   initialLoss: number;
   private lastLoss: number;
@@ -254,26 +283,57 @@ export class FederatedCoordinator {
   }
 
   /** FedAvg: the aggregator sees weights and sample counts, nothing else. */
+  /** Weighted mean of client parameters. Weights must be positive. */
+  private average(entries: { weights: Weights; weight: number }[]): Weights {
+    const total = entries.reduce((s, e) => s + e.weight, 0);
+    const w = new Array(FEATURE_DIM).fill(0);
+    let b = 0;
+    for (const e of entries) {
+      const share = e.weight / total;
+      for (let i = 0; i < FEATURE_DIM; i++) w[i] += e.weights.w[i] * share;
+      b += e.weights.b * share;
+    }
+    return { w, b };
+  }
+
   runRound(clients: FederatedClient[], tick: number): RoundSummary | null {
-    const uploads: { id: string; weights: Weights; n: number }[] = [];
+    const uploads: { id: string; weights: Weights; n: number; trust: number }[] = [];
     for (const c of clients) {
       const trained = c.localTrain();
-      if (trained) uploads.push({ id: c.rsuId, weights: trained.weights, n: trained.n });
+      if (trained)
+        uploads.push({ id: c.rsuId, weights: trained.weights, n: trained.n, trust: trained.trust });
     }
     if (!uploads.length) return null;
 
     const total = uploads.reduce((s, u) => s + u.n, 0);
-    const w = new Array(FEATURE_DIM).fill(0);
-    let b = 0;
-    for (const u of uploads) {
-      const share = u.n / total;
-      for (let i = 0; i < FEATURE_DIM; i++) w[i] += u.weights.w[i] * share;
-      b += u.weights.b * share;
+
+    // --- Trust-weighted aggregation ------------------------------------
+    // Plain FedAvg weights a client purely by how much data it has, which is
+    // exactly the wrong instinct when some of that data came from vehicles
+    // the network does not believe: the busiest compromised RSU gets the
+    // loudest vote. Scale the sample count by the corroboration-derived
+    // trust of its sources, and exclude anything below the floor outright.
+    let excluded = uploads.filter((u) => u.trust < TRUST_EXCLUSION_FLOOR).map((u) => u.id);
+    let admitted = uploads
+      .filter((u) => u.trust >= TRUST_EXCLUSION_FLOOR)
+      .map((u) => ({ id: u.id, weights: u.weights, weight: u.n * u.trust }));
+    // Everyone distrusted at once is a network-wide anomaly, not a reason to
+    // stop learning: fall back to plain FedAvg and report no exclusions.
+    if (!admitted.length) {
+      admitted = uploads.map((u) => ({ id: u.id, weights: u.weights, weight: u.n }));
+      excluded = [];
     }
-    this.globalWeights = { w, b };
+
+    this.globalWeights = this.average(admitted);
+    // The shadow model: what plain FedAvg would have produced. Kept so the
+    // benefit is measured rather than asserted. Costs one extra weighted
+    // mean per round and nothing on the wire.
+    this.plainWeights = this.average(
+      uploads.map((u) => ({ weights: u.weights, weight: u.n })),
+    );
 
     const drifts: number[] = [];
-    const ids = new Set(uploads.map((u) => u.id));
+    const ids = new Set(admitted.map((u) => u.id));
     for (const c of clients)
       if (ids.has(c.rsuId)) {
         c.loadGlobal(this.globalWeights);
@@ -292,6 +352,9 @@ export class FederatedCoordinator {
       weights_kilobytes: ((FEATURE_DIM + 1) * FLOAT_BYTES * uploads.length * 2) / 1024,
       raw_kilobytes_avoided: (total * RAW_SAMPLE_BYTES) / 1024,
       avg_client_drift: drifts.length ? drifts.reduce((a, x) => a + x, 0) / drifts.length : 0,
+      plain_fedavg_loss: round6(this.loss(this.plainWeights)),
+      mean_client_trust: uploads.reduce((a, u) => a + u.trust, 0) / uploads.length,
+      excluded_clients: excluded,
     };
     this.lastLoss = loss;
     this.rounds.push(summary);
@@ -307,6 +370,7 @@ export class FederatedCoordinator {
 
   snapshot() {
     const latest = this.rounds[this.rounds.length - 1] ?? null;
+    const plainLoss = this.loss(this.plainWeights);
     return {
       rounds_completed: this.rounds.length,
       initial_loss: round6(this.initialLoss),
@@ -320,6 +384,15 @@ export class FederatedCoordinator {
         Math.round(this.rounds.reduce((s, r) => s + r.raw_kilobytes_avoided, 0) * 10) / 10,
       latest_round: latest,
       history: this.rounds.slice(-60),
+      // The trust-weighting comparison, kept alongside the headline so the
+      // defence is shown working rather than asserted.
+      plain_fedavg_loss: round6(plainLoss),
+      trust_weighting_gain_pct: plainLoss
+        ? Math.round((1 - this.lastLoss / plainLoss) * 10000) / 100
+        : 0,
+      mean_client_trust: latest ? latest.mean_client_trust : 1,
+      excluded_clients: latest ? latest.excluded_clients : [],
+      rounds_with_exclusions: this.rounds.filter((r) => r.excluded_clients.length).length,
       weights: {
         features: FEATURE_NAMES,
         coefficients: this.globalWeights.w.map((v) => Math.round(v * 10000) / 10000),

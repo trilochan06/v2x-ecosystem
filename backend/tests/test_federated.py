@@ -27,24 +27,28 @@ def test_local_training_returns_weights_and_sample_count():
     trained = client.local_train()
 
     assert trained is not None
-    weights, n = trained
+    weights, n, trust = trained
     assert n == 40
     assert isinstance(weights, ModelWeights)
     assert weights.w.shape == (7,)
+    assert trust == 1.0  # nothing suspect has been observed
 
 
 def test_fedavg_is_the_sample_weighted_mean():
     """The whole privacy claim rests on the aggregator only ever seeing
     weights, so the aggregation itself must be exactly the documented
-    average -- verifiable by hand."""
+    average -- verifiable by hand.
+
+    With every client fully trusted, trust weighting reduces exactly to
+    FedAvg, which is what this pins."""
     coordinator = FederatedCoordinator()
 
     a, b = FederatedClient("rsu-a"), FederatedClient("rsu-b")
     feed(a, 20, slope=0.2)
     feed(b, 60, slope=0.9)
 
-    wa, na = a.local_train()
-    wb, nb = b.local_train()
+    wa, na, _ = a.local_train()
+    wb, nb, _ = b.local_train()
     expected = (wa.w * na + wb.w * nb) / (na + nb)
 
     # Re-run the same training through the coordinator.

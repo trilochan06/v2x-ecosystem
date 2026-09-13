@@ -29,6 +29,8 @@ from app.simulation.world import CityGrid
 
 DIGEST_INTERVAL_TICKS = 10
 PENDING_SAMPLE_LIMIT = 600
+#: Beyond this, a peer's occupancy report is too old to train on.
+REPORT_STALE_TICKS = 15
 
 
 @dataclass
@@ -41,6 +43,11 @@ class RSU:
     predictions: dict[str, dict] = field(default_factory=dict)
     fl_client: FederatedClient | None = None
     messages_handled: int = 0
+    #: segment id -> (reported occupancy, tick, reporter trust). What peers
+    #: *said*, which is not the same thing as what is true -- and is what an
+    #: RSU in the field actually has to learn from. The trust rides along so
+    #: a sample can be believed in proportion to its source.
+    reported_occupancy: dict[str, tuple[float, int, float]] = field(default_factory=dict)
     _pending: deque = field(default_factory=deque)
 
     def __post_init__(self) -> None:
@@ -78,8 +85,16 @@ class RSU:
             self.predictions[seg.id] = result
 
     # ------------------------------------------- M7 local training data
-    def collect_training_samples(self, predictor: CongestionPredictor, tick: int) -> int:
-        """Park this tick's features; harvest the ones whose horizon elapsed."""
+    def collect_training_samples(
+        self, predictor: CongestionPredictor, tick: int, source_trust: float = 1.0
+    ) -> int:
+        """Park this tick's features; harvest the ones whose horizon elapsed.
+
+        `source_trust` is how much the corroboration layer believes the
+        vehicles in this cell. It rides along with each sample so aggregation
+        can discount a cell whose road state was assembled from reports the
+        rest of the network could not confirm.
+        """
         for seg in self.local_segments():
             feats = predictor.build_features(seg, tick, self.neighbor_avg_for(seg))
             self._pending.append((tick + PREDICTION_HORIZON_TICKS, seg.id, feats))
@@ -92,7 +107,16 @@ class RSU:
             seg = self.grid.segments.get(seg_id)
             if seg is None or self.fl_client is None:
                 continue
-            self.fl_client.observe(feats, seg.occupancy)
+            # Train on the believed road state, not on ground truth an RSU
+            # could never see. This is the channel a false CAM travels down.
+            reported = self.reported_occupancy.get(seg_id)
+            if reported and tick - reported[1] <= REPORT_STALE_TICKS:
+                target, sample_trust = reported[0], reported[2]
+            else:
+                # Nobody reported it recently; fall back to what the RSU can
+                # measure itself, which is beyond an attacker's reach.
+                target, sample_trust = seg.occupancy, 1.0
+            self.fl_client.observe(feats, target, min(sample_trust, source_trust))
             harvested += 1
         return harvested
 

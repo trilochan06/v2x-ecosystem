@@ -58,22 +58,34 @@ export function useSimulation() {
   return { state, connected: true };
 }
 
+/**
+ * Every command reports what it actually did.
+ *
+ * The controls always worked, but a new car is one dot among twenty-six and
+ * an injected hazard lands on a random road — so from the outside nothing
+ * appeared to happen. Returning the affected id lets the UI name it and put
+ * the map on it.
+ */
 export const commands = {
   spawnVehicle: () => {
-    engine.spawnVehicle("car");
+    const v = engine.spawnVehicle("car");
     publish();
+    return v.id;
   },
   spawnAmbulance: () => {
-    engine.spawnVehicle("ambulance");
+    const v = engine.spawnVehicle("ambulance");
     publish();
+    return v.id;
   },
   spawnMalicious: () => {
-    engine.spawnVehicle("malicious");
+    const v = engine.spawnVehicle("malicious");
     publish();
+    return v.id;
   },
   injectHazard: () => {
-    engine.injectHazard();
+    const segmentId = engine.injectHazard();
     publish();
+    return segmentId;
   },
   replayAttack: () => {
     const result = engine.injectReplayAttack();

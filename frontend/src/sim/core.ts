@@ -198,7 +198,22 @@ export class CityGrid {
 /** Which radio or link a frame travels over. */
 export type Bearer = "its-g5" | "backhaul";
 
-export type MessageType = "cam" | "denm-hazard" | "denm-eva" | "telemetry-upload";
+export type MessageType =
+  | "cam"
+  | "denm-hazard"
+  | "denm-eva"
+  | "spatem"
+  | "srem"
+  | "ssem"
+  | "telemetry-upload";
+
+/** SSEM requestStatus values (TS 103 301 / SAE J2735). */
+export const SIGNAL_REQUEST_STATUS = {
+  REQUESTED: "requested",
+  PROCESSING: "processing",
+  GRANTED: "granted",
+  REJECTED: "rejected",
+} as const;
 
 export interface MessageSpec {
   designator: string;
@@ -230,6 +245,27 @@ export const MESSAGE_SPECS: Record<MessageType, MessageSpec> = {
     label: "Emergency vehicle approaching",
     bearer: "its-g5",
     payloadBytes: 180,
+  },
+  spatem: {
+    designator: "SPATEM",
+    standard: "ETSI TS 103 301",
+    label: "Signal phase and timing",
+    bearer: "its-g5",
+    payloadBytes: 96,
+  },
+  srem: {
+    designator: "SREM",
+    standard: "ETSI TS 103 301",
+    label: "Signal priority request",
+    bearer: "its-g5",
+    payloadBytes: 84,
+  },
+  ssem: {
+    designator: "SSEM",
+    standard: "ETSI TS 103 301",
+    label: "Signal request status",
+    bearer: "its-g5",
+    payloadBytes: 64,
   },
   "telemetry-upload": {
     designator: "probe",

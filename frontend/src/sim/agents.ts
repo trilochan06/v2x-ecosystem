@@ -164,13 +164,20 @@ export class Vehicle {
     });
   }
 
+  /** An attacker's CAM is where false *traffic state* enters the network.
+   *  Its hazard DENMs are caught by corroboration; this is the quieter
+   *  channel, and it is the one that reaches the training data. */
+  private reportedOccupancy(seg: Segment): number {
+    return this.kind === "malicious" ? 1 - seg.occupancy : seg.occupancy;
+  }
+
   private maybeShareOccupancy(seg: Segment, tick: number): Message | null {
     if (tick % OCCUPANCY_PING_INTERVAL_TICKS !== 0) return null;
     return makeMessage({
       type: "cam",
       senderId: this.id,
       pseudonym: this.pseudonym,
-      payload: { segment_id: seg.id, occupancy: Math.round(seg.occupancy * 1000) / 1000 },
+      payload: { segment_id: seg.id, occupancy: Math.round(this.reportedOccupancy(seg) * 1000) / 1000 },
       ttl: OCCUPANCY_PING_TTL_HOPS,
       createdTick: tick,
       signed: true,
@@ -239,6 +246,8 @@ export class Vehicle {
 
 // --------------------------------------------------------------- RSU
 const DIGEST_INTERVAL_TICKS = 10;
+/** Beyond this, a peer's occupancy report is too old to train on. */
+const REPORT_STALE_TICKS = 15;
 const PENDING_SAMPLE_LIMIT = 600;
 
 export class RSU {
@@ -285,7 +294,10 @@ export class RSU {
 
   /** Park this tick's features; harvest the ones whose horizon elapsed. No
    *  labels from the future. */
-  collectTrainingSamples(predictor: CongestionPredictor, tick: number) {
+  /** segment id -> what peers *said*, when, and how much they are believed. */
+  reportedOccupancy = new Map<string, { occupancy: number; tick: number; trust: number }>();
+
+  collectTrainingSamples(predictor: CongestionPredictor, tick: number, sourceTrust = 1) {
     for (const seg of this.localSegments())
       this.pending.push({
         due: tick + PREDICTION_HORIZON_TICKS,
@@ -297,7 +309,16 @@ export class RSU {
     while (this.pending.length && this.pending[0].due <= tick) {
       const { segId, feats } = this.pending.shift()!;
       const seg = this.grid.segments.get(segId);
-      if (seg) this.flClient.observe(feats, seg.occupancy);
+      if (!seg) continue;
+      // Train on the believed road state, not on ground truth an RSU could
+      // never see. This is the channel a false CAM travels down.
+      const reported = this.reportedOccupancy.get(segId);
+      const fresh = reported && tick - reported.tick <= REPORT_STALE_TICKS;
+      const target = fresh ? reported!.occupancy : seg.occupancy;
+      // Nobody reported it recently: fall back to what the RSU measures
+      // itself, which is beyond an attacker's reach.
+      const sampleTrust = fresh ? reported!.trust : 1;
+      this.flClient.observe(feats, target, Math.min(sampleTrust, sourceTrust));
     }
   }
 
@@ -604,11 +625,24 @@ function isRelevant(vehicle: Vehicle, segmentId: string, grid: CityGrid): boolea
 const LOOKAHEAD_NODES = 4;
 const PREEMPT_HOLD_TICKS = 8;
 
+export interface SignalRequest {
+  requestId: string;
+  ambulanceId: string;
+  intersection: string;
+  etaSeconds: number;
+  holdTicks: number;
+}
+
 export class EmergencyCorridorManager {
   activeCorridors = new Set<string>();
   /** Frames raised this tick, drained by the engine so they are transmitted
    *  and paid for like any other broadcast. */
   pendingFrames: Message[] = [];
+  /** Priority requests awaiting transmission as SREM. The corridor no longer
+   *  reaches into a TrafficLight and preempts it; it asks over the air, and
+   *  the ask can be lost or refused. */
+  pendingRequests: SignalRequest[] = [];
+  private requestSeq = 0;
 
   constructor(private grid: CityGrid) {}
 
@@ -617,6 +651,13 @@ export class EmergencyCorridorManager {
     const frames = this.pendingFrames;
     this.pendingFrames = [];
     return frames;
+  }
+
+  /** Hand the engine the priority requests to put on the air as SREM. */
+  drainRequests(): SignalRequest[] {
+    const requests = this.pendingRequests;
+    this.pendingRequests = [];
+    return requests;
   }
 
   step(tick: number, ambulances: Vehicle[], allVehicles: Vehicle[], lights: Map<string, TrafficLight>) {
@@ -655,7 +696,18 @@ export class EmergencyCorridorManager {
         cumulative += seg.lengthM;
         eta.set(route[i + 1], Math.round((cumulative / ((amb.speedKmh * 1000) / 3600)) * 10) / 10);
         corridorSegments.add(seg.id);
-        lights.get(route[i + 1])?.preempt(tick, PREEMPT_HOLD_TICKS, `ambulance ${amb.id} ETA ${eta.get(route[i + 1])}s`);
+        if (lights.has(route[i + 1])) {
+          // TS 103 301: ask the intersection over the air. Whether it grants
+          // -- or hears at all -- is decided when the SREM is transmitted.
+          this.requestSeq += 1;
+          this.pendingRequests.push({
+            requestId: `srem-${this.requestSeq}`,
+            ambulanceId: amb.id,
+            intersection: route[i + 1],
+            etaSeconds: eta.get(route[i + 1]) ?? 0,
+            holdTicks: PREEMPT_HOLD_TICKS,
+          });
+        }
       }
 
       for (const v of allVehicles) {

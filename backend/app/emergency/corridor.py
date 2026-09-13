@@ -33,6 +33,11 @@ class EmergencyCorridorManager:
     #: Frames raised this tick, drained by the engine so they are transmitted
     #: and paid for like any other broadcast.
     pending_frames: list[Message] = field(default_factory=list)
+    #: Priority requests awaiting transmission as SREM. The corridor no longer
+    #: reaches into a TrafficLight and preempts it; it asks over the air, and
+    #: the ask can be lost or refused.
+    pending_requests: list[dict] = field(default_factory=list)
+    _request_seq: int = 0
 
     def activate(self, ambulance: Vehicle, tick: int) -> Message:
         self.active_corridors[ambulance.id] = {"activated_tick": tick}
@@ -64,6 +69,11 @@ class EmergencyCorridorManager:
         """Hand the engine everything raised since the last drain."""
         frames, self.pending_frames = self.pending_frames, []
         return frames
+
+    def drain_requests(self) -> list[dict]:
+        """Hand the engine the priority requests to put on the air as SREM."""
+        requests, self.pending_requests = self.pending_requests, []
+        return requests
 
     def _eta_table(self, ambulance: Vehicle) -> dict[str, float]:
         eta = {}
@@ -100,10 +110,21 @@ class EmergencyCorridorManager:
                 a, b = route[i], route[i + 1]
                 seg = self.grid.segment_between(a, b)
                 corridor_segment_ids.add(seg.id)
-                light = traffic_lights.get(b)
                 eta = eta_table.get(b, 0.0)
-                if light:
-                    light.preempt(tick, PREEMPT_HOLD_TICKS, f"ambulance {ambulance.id} ETA {eta}s")
+                if b in traffic_lights:
+                    # TS 103 301: ask the intersection over the air. Whether it
+                    # grants -- or hears at all -- is decided by the engine when
+                    # the SREM is transmitted.
+                    self._request_seq += 1
+                    self.pending_requests.append(
+                        {
+                            "request_id": f"srem-{self._request_seq}",
+                            "ambulance_id": ambulance.id,
+                            "intersection": b,
+                            "eta_seconds": eta,
+                            "hold_ticks": PREEMPT_HOLD_TICKS,
+                        }
+                    )
 
             for v in all_vehicles:
                 if v.kind == "ambulance":

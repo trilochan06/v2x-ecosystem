@@ -27,11 +27,12 @@ from app.network.messages import (
     CertificateAttachmentPolicy,
     Message,
     MessageType,
+    SignalRequestStatus,
     backhaul_bytes,
 )
 from app.network.pseudonyms import PseudonymAuthority, ReplayGuard
 from app.network.rsu_network import RSUNetwork
-from app.network.security import TrustRegistry, verify
+from app.network.security import TrustRegistry, sign, verify
 from app.simulation.digital_twin import DigitalTwin
 from app.simulation.fog import FogNode, build_fog_clusters
 from app.simulation.rsu import RSU
@@ -46,6 +47,11 @@ FL_ROUND_INTERVAL_TICKS = 15
 TWIN_SYNC_INTERVAL_TICKS = 2
 HAZARD_SPAWN_PROBABILITY = 0.05
 HAZARD_DURATION_RANGE = (35, 70)
+#: SPaT is broadcast continuously in the field (1-10 Hz). A tick here is much
+#: coarser than 100 ms, so this is the equivalent duty cycle, not the rate.
+SPAT_BROADCAST_INTERVAL_TICKS = 4
+#: A priority request only needs to reach the junction just ahead.
+SIGNAL_REQUEST_TTL_HOPS = 2
 
 
 @dataclass
@@ -79,12 +85,17 @@ class SimulationEngine:
         self.authority = PseudonymAuthority()
         self.replay_guard = ReplayGuard()
         self.cert_policy = CertificateAttachmentPolicy()
+        #: SREM/SSEM outcomes. "unheard" is the interesting one: the request
+        #: was made and nobody received it.
+        self.signal_requests = {"requested": 0, "granted": 0, "unheard": 0}
         self.alerts = AlertEngine(cloud_round_trip_ticks=self.config.cloud_round_trip_ticks)
 
         self.vehicles: dict[str, Vehicle] = {}
         self.rsus: dict[str, RSU] = {}
         self.fog_nodes: dict[str, FogNode] = {}
         self.traffic_lights: dict[str, TrafficLight] = {}
+        #: intersection node -> the RSU whose radio serves it.
+        self._rsu_at: dict[str, str] = {}
         self.event_log: list[dict] = []
 
         self.cloud_online = True
@@ -104,6 +115,7 @@ class SimulationEngine:
             rsu_id = f"rsu-{i+1}"
             self.rsus[rsu_id] = RSU(id=rsu_id, node=node, grid=self.grid)
             self.rsu_network.register_rsu(rsu_id, node)
+            self._rsu_at[node] = rsu_id
             self.bus.register(rsu_id)
             self.traffic_lights[node] = TrafficLight(id=f"light-{node}", node=node)
             cx, cy = self.grid.coords(node)
@@ -309,9 +321,16 @@ class SimulationEngine:
                     self.blocked_this_tick += 1
                     continue
                 if node_id_ in self.rsus and self.rsus[node_id_].alive:
-                    self.rsus[node_id_].messages_handled += 1
+                    rsu = self.rsus[node_id_]
+                    rsu.messages_handled += 1
                     if msg.type == MessageType.DENM_HAZARD:
                         seen_reports[msg.id] = (sender.id, msg)
+                    elif msg.type == MessageType.CAM:
+                        rsu.reported_occupancy[msg.payload["segment_id"]] = (
+                            float(msg.payload["occupancy"]),
+                            self.tick,
+                            self.trust.score(sender.id),
+                        )
                 elif msg.type == MessageType.CAM:
                     peer = self.vehicles.get(node_id_)
                     if peer is not None:
@@ -448,7 +467,7 @@ class SimulationEngine:
                     explain=self.explain_predictions,
                 )
             if self.config.federated_learning:
-                rsu.collect_training_samples(self.predictor, self.tick)
+                rsu.collect_training_samples(self.predictor, self.tick, self._cell_trust(rsu.id))
 
         if self.config.federated_learning and self.tick % FL_ROUND_INTERVAL_TICKS == 0:
             clients = [r.fl_client for r in self.rsus.values() if r.alive and r.fl_client]
@@ -496,10 +515,125 @@ class SimulationEngine:
         for light in self.traffic_lights.values():
             light.step(self.tick)
 
+        if self.config.v2v_enabled:
+            self._broadcast_spat()
+
         ambulances = [v for v in self.vehicles.values() if v.kind == "ambulance"]
         if ambulances and self.config.emergency_corridor and service_up:
             self.corridor_mgr.step(self.tick, ambulances, list(self.vehicles.values()), self.traffic_lights)
             self._transmit_corridor_frames()
+            self._exchange_signal_priority()
+
+    def _broadcast_spat(self) -> None:
+        """Every signalised intersection announces its phase (TS 103 301).
+
+        SPaT is never relayed -- it describes one junction and is only useful
+        to vehicles approaching it -- so it goes out at TTL 1.
+        """
+        if self.tick % SPAT_BROADCAST_INTERVAL_TICKS != 0:
+            return
+        recipients = self._recipient_handles()
+        for light in self.traffic_lights.values():
+            rsu_id = self._rsu_at.get(light.node)
+            if rsu_id is None or not self.rsus[rsu_id].alive:
+                continue  # the roadside radio is what transmits it
+            frame = Message(
+                type=MessageType.SPATEM,
+                sender_id=light.id,
+                payload={
+                    "intersection": light.node,
+                    "phase": light.phase,
+                    "preempted": light.preempt_reason != "",
+                },
+                ttl=1,
+                created_tick=self.tick,
+            )
+            self._put_on_air(frame, light.node, recipients)
+
+    def _exchange_signal_priority(self) -> None:
+        """SREM out, SSEM back (TS 103 301).
+
+        A direct method call always lands. A radio message does not: this one
+        can be lost on the air, and the intersection can refuse it. Both are
+        things a real deployment copes with and a function call hides.
+        """
+        requests = self.corridor_mgr.drain_requests()
+        if not requests:
+            return
+        recipients = self._recipient_handles()
+        for req in requests:
+            ambulance = self.vehicles.get(req["ambulance_id"])
+            light = self.traffic_lights.get(req["intersection"])
+            if ambulance is None or light is None:
+                continue
+
+            self.signal_requests["requested"] += 1
+            srem = Message(
+                type=MessageType.SREM,
+                sender_id=ambulance.id,
+                pseudonym=ambulance.pseudonym,
+                payload={
+                    "request_id": req["request_id"],
+                    "intersection": req["intersection"],
+                    "eta_seconds": req["eta_seconds"],
+                },
+                ttl=SIGNAL_REQUEST_TTL_HOPS,
+                created_tick=self.tick,
+                signature=sign({"request_id": req["request_id"]}, ambulance.signing_key),
+            )
+            delivered = self._put_on_air(srem, ambulance.node, recipients)
+
+            rsu_id = self._rsu_at.get(req["intersection"])
+            heard = rsu_id is not None and rsu_id in delivered and self.rsus[rsu_id].alive
+            if not heard:
+                # Out of range, the frame collided, or the roadside unit is
+                # down. The light simply never learns it was asked.
+                self.signal_requests["unheard"] += 1
+                continue
+
+            light.preempt(self.tick, req["hold_ticks"], f"{ambulance.id} ETA {req['eta_seconds']}s")
+            self.signal_requests["granted"] += 1
+            ssem = Message(
+                type=MessageType.SSEM,
+                sender_id=light.id,
+                payload={
+                    "request_id": req["request_id"],
+                    "intersection": req["intersection"],
+                    "status": str(SignalRequestStatus.GRANTED),
+                },
+                ttl=SIGNAL_REQUEST_TTL_HOPS,
+                created_tick=self.tick,
+            )
+            self._put_on_air(ssem, light.node, recipients)
+
+    def _cell_trust(self, rsu_id: str) -> float:
+        """Mean trust of the vehicles currently homed to this RSU.
+
+        This is the link between M11 and M7: an RSU whose cell is full of
+        vehicles the network has stopped believing is an RSU whose training
+        data should not be averaged in at full weight.
+        """
+        members = [
+            vid for vid, cell in self.rsu_network.vehicle_cell.items() if cell == rsu_id
+        ]
+        scores = [self.trust.score(vid) for vid in members if vid in self.vehicles]
+        if not scores:
+            return 1.0
+        return sum(scores) / len(scores)
+
+    def _put_on_air(self, frame: Message, origin_node: str, recipients: list) -> list[str]:
+        """Transmit one frame and pay for it. Returns who decoded it."""
+        frame.certificate_attached = self.cert_policy.attach(frame.pseudonym or frame.sender_id)
+        load = self._channel_load(origin_node)
+        delivered, intended = self.bus.broadcast(
+            frame, origin_node, self.tick, recipients, channel_load=load
+        )
+        self.messages_this_tick += len(delivered)
+        self.bytes_this_tick += frame.size_bytes
+        self.metrics.record_broadcast(
+            intended, len(delivered), frame.size_bytes, frame.spec.designator
+        )
+        return delivered
 
     def _transmit_corridor_frames(self) -> None:
         """Put the corridor's DENMs on the air and pay for them.
@@ -514,16 +648,7 @@ class SimulationEngine:
             origin = self.vehicles.get(frame.sender_id)
             if origin is None:
                 continue
-            frame.certificate_attached = self.cert_policy.attach(frame.pseudonym or frame.sender_id)
-            load = self._channel_load(origin.node)
-            delivered, intended = self.bus.broadcast(
-                frame, origin.node, self.tick, recipients, channel_load=load
-            )
-            self.messages_this_tick += len(delivered)
-            self.bytes_this_tick += frame.size_bytes
-            self.metrics.record_broadcast(
-                intended, len(delivered), frame.size_bytes, frame.spec.designator
-            )
+            self._put_on_air(frame, origin.node, recipients)
 
     def _hazard_lifecycle(self) -> None:
         if self.auto_hazards and self.rng.random() < HAZARD_SPAWN_PROBABILITY:
@@ -592,6 +717,12 @@ class SimulationEngine:
             "alerts": self.alerts.snapshot(),
             "metrics": self.metrics.summary(),
             "active_corridors": list(self.corridor_mgr.active_corridors.keys()),
+            "signal_priority": {
+                **self.signal_requests,
+                "grant_rate_pct": round(
+                    100 * self.signal_requests["granted"] / max(self.signal_requests["requested"], 1), 1
+                ),
+            },
             "handovers": self.rsu_network.handover_log[-20:],
             "events": list(reversed(self.event_log[-40:])),
         }

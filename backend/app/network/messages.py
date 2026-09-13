@@ -15,13 +15,24 @@ DENM  EN 302 637-3  Decentralized Environmental Notification Message. Event
                     the TS 102 894-2 Common Data Dictionary rather than a
                     free-text hazard label.
 
-Not implemented -- "Day-1.5" and later
---------------------------------------
-SPATEM/MAPEM (signal phase and intersection topology), IVIM (infrastructure
-signage), SREM/SSEM (signal priority request and status) and CPM (collective
-perception, TS 103 324). The traffic lights and the emergency corridor in this
-simulation would use SPATEM and SREM/SSEM in a real deployment; they currently
-act through direct object calls instead. See docs/ROADMAP.md.
+Also implemented -- the "Day-1.5" signal set
+-------------------------------------------
+SPATEM TS 103 301   Signal Phase And Timing. Every signalised intersection
+                    broadcasts its current phase, so an approaching vehicle
+                    knows what the light will be doing when it arrives.
+SREM   TS 103 301   Signal Request Extended Message. How an emergency vehicle
+                    asks an intersection for priority.
+SSEM   TS 103 301   Signal Status Extended Message. The intersection's answer,
+                    carrying a requestStatus the requester can act on.
+
+The point of routing priority through SREM/SSEM rather than a direct call is
+that the request can be *refused* and can be *lost on the air* -- which is what
+a real deployment has to cope with and a function call never does.
+
+Not implemented
+---------------
+MAPEM (intersection topology, which SPaT references by lane id) and CPM
+(collective perception, TS 103 324). See docs/ROADMAP.md.
 
 Frame sizing
 ------------
@@ -81,8 +92,24 @@ class MessageType(StrEnum):
     DENM_HAZARD = "denm-hazard"
     #: EN 302 637-3 DENM, cause 95 -- an emergency vehicle is approaching.
     DENM_EVA = "denm-eva"
+    #: TS 103 301 SPATEM -- signal phase and timing, broadcast by every
+    #: signalised intersection.
+    SPATEM = "spatem"
+    #: TS 103 301 SREM -- a priority request from an emergency vehicle.
+    SREM = "srem"
+    #: TS 103 301 SSEM -- the intersection's answer to a SREM.
+    SSEM = "ssem"
     #: Raw probe data streamed to a central service. Not a C-ITS message.
     TELEMETRY_UPLOAD = "telemetry-upload"
+
+
+class SignalRequestStatus(StrEnum):
+    """SSEM requestStatus values (TS 103 301 / SAE J2735 PrioritizationResponseStatus)."""
+
+    REQUESTED = "requested"
+    PROCESSING = "processing"
+    GRANTED = "granted"
+    REJECTED = "rejected"
 
 
 class CauseCode(IntEnum):
@@ -195,6 +222,31 @@ MESSAGE_SPECS: dict[MessageType, MessageSpec] = {
         bearer=Bearer.ITS_G5,
         # As above; the predicted path and ETA table ride in variable_bytes.
         payload_bytes=180,
+    ),
+    MessageType.SPATEM: MessageSpec(
+        designator="SPATEM",
+        standard="ETSI TS 103 301",
+        label="Signal phase and timing",
+        bearer=Bearer.ITS_G5,
+        # IntersectionState with a handful of MovementStates. A real SPaT for
+        # a complex junction is larger; this is a simple four-approach one.
+        payload_bytes=96,
+    ),
+    MessageType.SREM: MessageSpec(
+        designator="SREM",
+        standard="ETSI TS 103 301",
+        label="Signal priority request",
+        bearer=Bearer.ITS_G5,
+        # RequestorDescription + one SignalRequest.
+        payload_bytes=84,
+    ),
+    MessageType.SSEM: MessageSpec(
+        designator="SSEM",
+        standard="ETSI TS 103 301",
+        label="Signal request status",
+        bearer=Bearer.ITS_G5,
+        # SignalStatus with the request's id and its disposition.
+        payload_bytes=64,
     ),
     MessageType.TELEMETRY_UPLOAD: MessageSpec(
         designator="probe",
