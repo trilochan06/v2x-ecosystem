@@ -161,6 +161,27 @@ export interface MetricsSummary {
   };
 }
 
+/**
+ * One frame's journey, for the close-up view.
+ *
+ * The fleet dashboard only needs counts; a street-level view has to draw the
+ * actual hop from sender to receiver, so the engine records who transmitted
+ * what and who decoded it.
+ */
+export interface Transmission {
+  id: string;
+  tick: number;
+  designator: string;
+  type: string;
+  sender_id: string;
+  origin_node: string;
+  delivered_to: string[];
+  intended: number;
+  segment_id?: string;
+  hazard_type?: string;
+  cause_code?: number;
+}
+
 export interface EventEntry {
   tick: number;
   type: string;
@@ -235,6 +256,8 @@ export interface SimulationState {
     grant_rate_pct: number;
   };
   handovers: { tick: number; vehicle_id: string; from: string; to: string; reason: string }[];
+  /** Recent frames on the air, newest last. Bounded — see the engine. */
+  transmissions: Transmission[];
   events: EventEntry[];
 }
 

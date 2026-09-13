@@ -36,7 +36,7 @@ import {
   ReplayGuard,
   TrustRegistry,
 } from "./network";
-import type { ArchitectureConfigState, SimulationState } from "../types";
+import type { ArchitectureConfigState, SimulationState, Transmission } from "../types";
 
 // ------------------------------------------------------------ metrics
 const CONGESTION_THRESHOLD = 0.7;
@@ -45,6 +45,8 @@ const CONGESTION_THRESHOLD = 0.7;
 const SPAT_BROADCAST_INTERVAL_TICKS = 4;
 /** A priority request only needs to reach the junction just ahead. */
 const SIGNAL_REQUEST_TTL_HOPS = 2;
+/** How many recent frames the street-level view can replay. */
+const TRANSMISSION_LOG_LIMIT = 60;
 
 export class MetricsCollector {
   packetsIntended = 0;
@@ -290,6 +292,10 @@ export class SimulationEngine {
   signalRequests = { requested: 0, granted: 0, unheard: 0 };
   /** intersection node -> the RSU whose radio serves it. */
   private rsuAt = new Map<string, string>();
+  /** Recent frames on the air. The street-level view animates these, so it
+   *  needs the actual hop rather than a running total. Bounded so a long
+   *  session cannot grow the snapshot without limit. */
+  transmissions: Transmission[] = [];
   twin: DigitalTwin;
   alerts: AlertEngine;
   corridor: EmergencyCorridorManager;
@@ -519,6 +525,7 @@ export class SimulationEngine {
       this.messagesThisTick += delivered.length;
       this.bytesThisTick += bytes;
       this.metrics.recordBroadcast(intended, delivered.length, bytes, MESSAGE_SPECS[msg.type].designator);
+      this.recordTransmission(msg, vehicle.node, delivered, intended);
 
       for (const nodeIdent of delivered) {
         if (!this.admit(nodeIdent, msg)) {
@@ -719,7 +726,30 @@ export class SimulationEngine {
     this.messagesThisTick += delivered.length;
     this.bytesThisTick += bytes;
     this.metrics.recordBroadcast(intended, delivered.length, bytes, MESSAGE_SPECS[frame.type].designator);
+    this.recordTransmission(frame, originNode, delivered, intended);
     return delivered;
+  }
+
+  private recordTransmission(
+    frame: Message,
+    originNode: string,
+    delivered: string[],
+    intended: number,
+  ) {
+    this.transmissions.push({
+      id: frame.id,
+      tick: this.tick,
+      designator: MESSAGE_SPECS[frame.type].designator,
+      type: frame.type,
+      sender_id: frame.senderId,
+      origin_node: originNode,
+      delivered_to: delivered,
+      intended,
+      segment_id: frame.payload.segment_id as string | undefined,
+      hazard_type: frame.payload.hazard_type as string | undefined,
+      cause_code: frame.payload.cause_code as number | undefined,
+    });
+    if (this.transmissions.length > TRANSMISSION_LOG_LIMIT) this.transmissions.shift();
   }
 
   /** Put the corridor's DENMs on the air and pay for them. These frames used
@@ -907,6 +937,7 @@ export class SimulationEngine {
           Math.round((1000 * this.signalRequests.granted) / Math.max(this.signalRequests.requested, 1)) / 10,
       },
       handovers: this.rsuNetwork.handoverLog.slice(-20),
+      transmissions: [...this.transmissions],
       events: [...this.eventLog].slice(-40).reverse(),
     } as SimulationState;
   }

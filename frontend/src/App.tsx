@@ -1,6 +1,7 @@
 import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Home } from "./pages/Home";
+import { StreetView } from "./pages/StreetView";
 import { ControlCenter } from "./pages/ControlCenter";
 import { Federated } from "./pages/Federated";
 import { Security } from "./pages/Security";
@@ -9,6 +10,7 @@ import { Architecture } from "./pages/Architecture";
 
 const NAV = [
   { to: "/", label: "Overview", end: true },
+  { to: "/street", label: "Street View" },
   { to: "/control", label: "Control Centre" },
   { to: "/federated", label: "Federated Learning" },
   { to: "/security", label: "Security & Trust" },
@@ -52,6 +54,7 @@ export default function App() {
         <ErrorBoundary key={location.pathname} area="This page">
           <Routes>
             <Route path="/" element={<Home />} />
+            <Route path="/street" element={<StreetView />} />
             <Route path="/control" element={<ControlCenter />} />
             <Route path="/federated" element={<Federated />} />
             <Route path="/security" element={<Security />} />

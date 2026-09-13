@@ -52,6 +52,8 @@ HAZARD_DURATION_RANGE = (35, 70)
 SPAT_BROADCAST_INTERVAL_TICKS = 4
 #: A priority request only needs to reach the junction just ahead.
 SIGNAL_REQUEST_TTL_HOPS = 2
+#: How many recent frames the street-level view can replay.
+TRANSMISSION_LOG_LIMIT = 60
 
 
 @dataclass
@@ -96,6 +98,10 @@ class SimulationEngine:
         self.traffic_lights: dict[str, TrafficLight] = {}
         #: intersection node -> the RSU whose radio serves it.
         self._rsu_at: dict[str, str] = {}
+        #: Recent frames on the air. A street-level view animates the actual
+        #: hop rather than a running total, so it needs sender and receivers.
+        #: Bounded so a long session cannot grow the snapshot without limit.
+        self.transmissions: list[dict] = []
         self.event_log: list[dict] = []
 
         self.cloud_online = True
@@ -315,6 +321,7 @@ class SimulationEngine:
             self.metrics.record_broadcast(
                 intended, len(delivered), msg.size_bytes, msg.spec.designator
             )
+            self._record_transmission(msg, sender.node, delivered, intended)
 
             for node_id_ in delivered:
                 if not self._admit(node_id_, msg):
@@ -633,7 +640,28 @@ class SimulationEngine:
         self.metrics.record_broadcast(
             intended, len(delivered), frame.size_bytes, frame.spec.designator
         )
+        self._record_transmission(frame, origin_node, delivered, intended)
         return delivered
+
+    def _record_transmission(
+        self, frame: Message, origin_node: str, delivered: list[str], intended: int
+    ) -> None:
+        self.transmissions.append(
+            {
+                "id": frame.id,
+                "tick": self.tick,
+                "designator": frame.spec.designator,
+                "type": str(frame.type),
+                "sender_id": frame.sender_id,
+                "origin_node": origin_node,
+                "delivered_to": list(delivered),
+                "intended": intended,
+                "segment_id": frame.payload.get("segment_id"),
+                "hazard_type": frame.payload.get("hazard_type"),
+                "cause_code": frame.payload.get("cause_code"),
+            }
+        )
+        del self.transmissions[:-TRANSMISSION_LOG_LIMIT]
 
     def _transmit_corridor_frames(self) -> None:
         """Put the corridor's DENMs on the air and pay for them.
@@ -724,6 +752,7 @@ class SimulationEngine:
                 ),
             },
             "handovers": self.rsu_network.handover_log[-20:],
+            "transmissions": list(self.transmissions),
             "events": list(reversed(self.event_log[-40:])),
         }
 

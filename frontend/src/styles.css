@@ -520,3 +520,143 @@ button.danger { background: #2c1414; border-color: #5e2525; color: #f3a8a8; }
   from { opacity: 0; transform: translateY(6px); }
   to   { opacity: 1; transform: none; }
 }
+
+/* =====================================================================
+   Street view — the close-up simulator
+   ===================================================================== */
+.street-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .street-body { grid-template-columns: 1fr; }
+}
+
+.street-panel { padding: 14px; }
+.street-map {
+  width: 100%;
+  height: auto;
+  display: block;
+  background: radial-gradient(ellipse at 50% 40%, #101b28 0%, #0a1018 70%);
+  border-radius: 8px;
+}
+
+.street-vehicle-label {
+  font-size: 11px;
+  font-weight: 700;
+  fill: #e8edf3;
+  paint-order: stroke;
+  stroke: #0a1018;
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+.street-rsu-label {
+  font-size: 10px;
+  font-weight: 700;
+  fill: #9fb0c3;
+}
+
+.street-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.street-legend span { display: flex; align-items: center; gap: 7px; }
+.key-wedge {
+  width: 0;
+  height: 0;
+  border-left: 9px solid currentColor;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  background: none !important;
+  color: inherit;
+}
+/* The wedge takes its colour from the inline background, so mirror it. */
+.key-wedge[style] { border-left-color: currentColor; }
+.key-ring {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 2px solid;
+  flex: none;
+}
+.key-line {
+  width: 20px;
+  height: 0;
+  border-top: 3px dashed #f0b429;
+  flex: none;
+}
+.street-hint { margin: 10px 0 0; }
+
+/* ------------------------------------------------------------ transport */
+.transport {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+}
+.transport-main { display: flex; flex-wrap: wrap; gap: 8px; }
+.transport-speed { display: flex; gap: 5px; margin-left: auto; }
+.chip {
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 11px;
+  border-radius: 20px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--text-2);
+  cursor: pointer;
+}
+.chip.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+.transport-tick {
+  font-size: 13px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ----------------------------------------------------------- narration */
+.narration-feed {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+.narration-line {
+  display: flex;
+  gap: 9px;
+  font-size: 13px;
+  line-height: 1.45;
+  padding-left: 9px;
+  border-left: 2px solid var(--line);
+  color: var(--text-2);
+}
+.narration-tick {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  flex: none;
+  font-size: 11.5px;
+  padding-top: 1px;
+}
+.narration-cam    { border-left-color: #3987e5; }
+.narration-denm   { border-left-color: #e66767; color: var(--text); }
+.narration-signal { border-left-color: #199e70; }
+
+.mono-sm { font-size: 11.5px; font-family: ui-monospace, monospace; }
+
+/* The scene is square; cap it so the whole neighbourhood — all four roadside
+   units included — fits on screen without scrolling. */
+.street-map {
+  max-width: min(100%, 620px);
+  margin: 0 auto;
+}
