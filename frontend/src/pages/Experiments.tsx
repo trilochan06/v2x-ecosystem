@@ -1,7 +1,11 @@
-import { useEffect, useState } from "react";
-import { api } from "../api/client";
+import { useState } from "react";
+import { SCENARIOS, runSuite } from "../sim/experiments";
 import { BarComparison, SERIES_COLORS } from "../components/charts/BarComparison";
 import type { ExperimentSuite, Scenario } from "../types";
+
+/** Below this many corroborated alerts, the latency average is noise and the
+ *  page says so instead of printing a number. */
+const MIN_LATENCY_SAMPLES = 5;
 
 const SHORT: Record<string, string> = {
   exp1_centralized: "Exp 1 · Centralized",
@@ -10,7 +14,7 @@ const SHORT: Record<string, string> = {
 };
 
 export function Experiments() {
-  const [scenarios, setScenarios] = useState<Scenario[]>([]);
+  const scenarios: Scenario[] = SCENARIOS;
   const [scenario, setScenario] = useState("normal");
   const [ticks, setTicks] = useState(250);
   const [seed, setSeed] = useState(4242);
@@ -18,17 +22,17 @@ export function Experiments() {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    api.scenarios().then((r) => setScenarios(r.scenarios)).catch(() => setScenarios([]));
-  }, []);
-
   const run = async () => {
     setRunning(true);
     setError(null);
+    // Yield once so the button repaints as "running" before the sweep blocks
+    // the main thread for a second or two.
+    await new Promise((resolve) => setTimeout(resolve, 30));
     try {
-      setSuite(await api.runExperiments(scenario, ticks, seed));
+      setSuite(runSuite(scenario, ticks, seed));
     } catch (e) {
-      setError("The sweep failed to run. Is the backend still up?");
+      console.error(e);
+      setError("The sweep failed to run.");
     } finally {
       setRunning(false);
     }
@@ -103,20 +107,37 @@ export function Experiments() {
               {suite.scenario.ambulances > 0 && `, ${suite.scenario.ambulances} ambulances`}
             </p>
             <div className="headline-grid">
-              {Object.entries(suite.headline).map(([key, h]) => (
-                <div className="headline" key={key}>
-                  <span className="headline-label">{h.label}</span>
-                  <span className="headline-value">
-                    {h.baseline} <span className="arrow">→</span> {h.proposed}
-                    <span className="headline-unit"> {h.unit}</span>
-                  </span>
-                  <span className={h.improvement_pct >= 0 ? "delta good" : "delta bad"}>
-                    {h.improvement_pct >= 0 ? "improved " : "worse "}
-                    {Math.abs(h.improvement_pct)}
-                    {key === "availability_during_outage" ? " pts" : "%"}
-                  </span>
-                </div>
-              ))}
+              {Object.entries(suite.headline).map(([key, h]) => {
+                const samples = Math.min(
+                  ...suite.runs.map((r) => r.metrics.communication.alert_samples),
+                );
+                const tooFew = key === "alert_latency" && samples < MIN_LATENCY_SAMPLES;
+                return (
+                  <div className="headline" key={key}>
+                    <span className="headline-label">{h.label}</span>
+                    {tooFew ? (
+                      <>
+                        <span className="headline-value muted">not enough data</span>
+                        <span className="delta">
+                          only {samples} corroborated alert{samples === 1 ? "" : "s"} — run longer
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="headline-value">
+                          {h.baseline} <span className="arrow">→</span> {h.proposed}
+                          <span className="headline-unit"> {h.unit}</span>
+                        </span>
+                        <span className={h.improvement_pct >= 0 ? "delta good" : "delta bad"}>
+                          {h.improvement_pct >= 0 ? "improved " : "worse "}
+                          {Math.abs(h.improvement_pct)}
+                          {key === "availability_during_outage" ? " pts" : "%"}
+                        </span>
+                      </>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </section>
 
@@ -159,12 +180,12 @@ export function Experiments() {
               caption="Delivered over intended receptions, under a density-dependent contention model."
             />
             <BarComparison
-              title="Average trip time"
-              unit="ticks"
-              data={series((r) => r.metrics.traffic.avg_trip_ticks)}
-              lowerIsBetter
-              precision={1}
-              caption="Journey duration. See the reading note below — this is the metric that did not separate."
+              title="Mobility"
+              unit="segments per 100 vehicle-ticks"
+              data={series((r) => r.metrics.traffic.segments_per_100_vehicle_ticks)}
+              lowerIsBetter={false}
+              precision={3}
+              caption="How fast traffic actually moves. Unlike average trip time this has no survivorship bias — every vehicle counts every tick, whether or not it finishes its journey inside the run."
             />
           </div>
 
@@ -188,7 +209,9 @@ export function Experiments() {
                   <Row suite={suite} label="Packet delivery ratio" pick={(r) => r.metrics.communication.packet_delivery_ratio} />
                   <Row suite={suite} label="Uplink (KB/tick)" pick={(r) => r.metrics.communication.uplink_kilobytes_per_tick} />
                   <Row suite={suite} label="Local radio (KB/tick)" pick={(r) => r.metrics.communication.local_kilobytes_per_tick} />
-                  <Row suite={suite} label="Avg trip (ticks)" pick={(r) => r.metrics.traffic.avg_trip_ticks} />
+                  <Row suite={suite} label="Mobility (segments/100 veh-ticks)" pick={(r) => r.metrics.traffic.segments_per_100_vehicle_ticks} />
+                  <Row suite={suite} label="Alert samples" pick={(r) => r.metrics.communication.alert_samples} />
+                  <Row suite={suite} label="Avg trip (ticks, biased)" pick={(r) => r.metrics.traffic.avg_trip_ticks} />
                   <Row suite={suite} label="Congestion duration (%)" pick={(r) => r.metrics.traffic.congestion_duration_pct} />
                   <Row suite={suite} label="Detection precision" pick={(r) => r.metrics.detection.precision} />
                   <Row suite={suite} label="Detection recall" pick={(r) => r.metrics.detection.recall} />
@@ -217,10 +240,10 @@ function ReadingNotes({ suite }: { suite: ExperimentSuite }) {
   const episodes = base.metrics.detection.hazards_detected + base.metrics.detection.hazards_missed;
 
   const f1Delta = full.metrics.detection.f1 - base.metrics.detection.f1;
-  const tripDelta = full.metrics.traffic.avg_trip_ticks - base.metrics.traffic.avg_trip_ticks;
-  const tripPct = base.metrics.traffic.avg_trip_ticks
-    ? (100 * tripDelta) / base.metrics.traffic.avg_trip_ticks
-    : 0;
+  const baseMobility = base.metrics.traffic.segments_per_100_vehicle_ticks;
+  const fullMobility = full.metrics.traffic.segments_per_100_vehicle_ticks;
+  const mobilityPct = baseMobility ? (100 * (fullMobility - baseMobility)) / baseMobility : 0;
+  const alertSamples = Math.min(...suite.runs.map((r) => r.metrics.communication.alert_samples));
 
   const detectionSentence =
     Math.abs(f1Delta) < 0.05
@@ -236,11 +259,11 @@ function ReadingNotes({ suite }: { suite: ExperimentSuite }) {
         )} → ${full.metrics.detection.f1.toFixed(2)}).`;
 
   const tripSentence =
-    Math.abs(tripPct) < 2
-      ? "Average trip time does not separate meaningfully between the three architectures."
-      : tripDelta < 0
-      ? `Average trip time improves by ${Math.abs(tripPct).toFixed(1)}%.`
-      : `Average trip time is ${tripPct.toFixed(1)}% worse under the proposed architecture in this run.`;
+    Math.abs(mobilityPct) < 3
+      ? "Traffic mobility does not separate meaningfully between the three architectures."
+      : mobilityPct > 0
+      ? `Traffic mobility is ${mobilityPct.toFixed(1)}% higher under the proposed architecture.`
+      : `Traffic mobility is ${Math.abs(mobilityPct).toFixed(1)}% lower under the proposed architecture in this run.`;
 
   return (
     <section className="panel wide">
@@ -257,10 +280,10 @@ function ReadingNotes({ suite }: { suite: ExperimentSuite }) {
         than independent greedy choices, which is scoped as future work.
       </p>
       <p className="muted small">
-        Sample size caveat: this run contained {episodes} hazard episode{episodes === 1 ? "" : "s"}, so precision and
-        recall are noisy and can move several points between seeds. Latency, uplink overhead and availability aggregate
-        over every tick and are far more stable. For a result you would quote in a report, run several seeds and report
-        the spread.
+        Sample size caveat: this run contained {episodes} hazard episode{episodes === 1 ? "" : "s"} and{" "}
+        {alertSamples} corroborated alert{alertSamples === 1 ? "" : "s"}, so precision, recall and latency are noisy and
+        can move several points between seeds. Uplink overhead, availability and mobility aggregate over every tick and
+        are far more stable. For a result you would quote in a report, run several seeds and give the spread.
       </p>
     </section>
   );

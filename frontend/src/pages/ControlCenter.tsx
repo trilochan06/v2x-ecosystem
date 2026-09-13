@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
-import { useSimulationSocket } from "../api/useSimulationSocket";
-import { api, commands } from "../api/client";
+import { useState } from "react";
+import { commands, switchArchitecture, useSimulation } from "../sim/runtime";
+import { CONFIGS } from "../sim/engine";
 import { CityMap } from "../components/CityMap";
 import { ExplainPanel } from "../components/ExplainPanel";
 import { EventLog } from "../components/EventLog";
@@ -8,33 +8,18 @@ import { FogPanel } from "../components/FogPanel";
 import type { ArchitectureConfigState } from "../types";
 
 export function ControlCenter() {
-  const { state, connected } = useSimulationSocket();
+  const { state, connected } = useSimulation();
   const [selectedSegment, setSelectedSegment] = useState<string | null>(null);
-  const [configs, setConfigs] = useState<ArchitectureConfigState[]>([]);
-  const [busy, setBusy] = useState(false);
+  const configs: ArchitectureConfigState[] = Object.values(CONFIGS);
+  const busy = false;
 
-  useEffect(() => {
-    api.architectures().then((r) => setConfigs(r.configs)).catch(() => setConfigs([]));
-  }, []);
-
-  const run = async (fn: () => Promise<unknown>) => {
-    setBusy(true);
-    try {
-      await fn();
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setBusy(false);
-    }
-  };
+  const run = (fn: () => unknown) => fn();
 
   if (!state) {
     return (
       <div className="loading">
         <p>Connecting to the simulation engine…</p>
-        <p className="muted small">
-          If this does not resolve, start the backend with <code>uvicorn app.main:app --port 8000</code>.
-        </p>
+        <p className="muted small">The simulation runs in your browser — no server required.</p>
       </div>
     );
   }
@@ -57,7 +42,7 @@ export function ControlCenter() {
             id="arch"
             value={state.config.key}
             disabled={busy}
-            onChange={(e) => run(() => api.switchArchitecture(e.target.value))}
+            onChange={(e) => switchArchitecture(e.target.value)}
           >
             {configs.map((c) => (
               <option key={c.key} value={c.key}>

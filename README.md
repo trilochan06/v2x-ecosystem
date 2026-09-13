@@ -98,13 +98,56 @@ cd backend && source .venv/bin/activate && pytest
 
 ## Hosting it
 
-The simulation is a **long-lived ticking loop with a WebSocket attached**, so it
-needs a persistent server process. It will *not* work on serverless function
-hosting (Vercel/Netlify functions, Lambda) — those spin up per request and cannot
-hold simulation state or an open socket. Pick a host that runs a container.
+There are two ways to run this, and they share the same UI.
 
-In production the API process also serves the built frontend, so the whole thing is
-one service on one port and the UI is same-origin (no CORS, no build-time API URL).
+### Static build — the simulation runs in your browser (recommended for demos)
+
+`frontend/src/sim/` is a TypeScript port of the Python engine, so the entire
+system — vehicles, gossip radio, edge inference, FedAvg, digital twin, security,
+and the experiment harness — executes client-side. That makes the site a **pure
+static bundle with no backend at all**: instant load, no cold starts, free to host
+anywhere.
+
+The congestion model is not reimplemented. `frontend/src/sim/model.json` holds the
+exact gradient-boosted trees fitted by the Python pipeline, and the TypeScript walk
+reproduces scikit-learn's prediction to within 5e-07, so the hosted demo is
+numerically faithful to the results in the report. The two engines are checked
+against each other on an unbiased mobility metric (see below): TypeScript 1.302
+vs Python 1.292 segments per 100 vehicle-ticks across 8 seeds.
+
+Deploy to Vercel by importing this repo — `vercel.json` sets the build command and
+the SPA rewrite. Or from the repo root:
+
+```bash
+npx vercel --prod
+```
+
+Any static host works (Netlify, GitHub Pages, S3); just serve `frontend/dist` and
+rewrite unknown paths to `index.html` for client-side routing.
+
+### Python backend — the research artifact
+
+The FastAPI engine under `backend/` remains the reference implementation and is
+what the report's numbers come from. It is a **long-lived ticking loop with a
+WebSocket attached**, so it needs a persistent process and will *not* run on
+serverless functions. For that path the API process also serves the built
+frontend, so it is one service on one port:
+
+```bash
+docker build -t v2x-ecosystem . && docker run -p 8000:8000 v2x-ecosystem
+```
+
+`render.yaml` deploys that container on Render's free tier.
+
+## A note on measuring traffic impact
+
+`avg_trip_ticks` only counts journeys that *finish inside the run*, which
+over-samples short routes — a survivorship bias that makes the number depend on
+the window length. It is still reported, labelled as biased, but the metric to
+compare on is **segments per 100 vehicle-ticks**, where every vehicle contributes
+every tick whether or not it reaches its destination. Likewise, corroborated
+alerts are rare events, so the alert-latency figure carries its sample count and
+the site refuses to headline it below five samples.
 
 ### Render (recommended — free tier, no card)
 

@@ -1,8 +1,8 @@
-import { useSimulationSocket } from "../api/useSimulationSocket";
+import { useSimulation } from "../sim/runtime";
 import { ConvergenceLine } from "../components/charts/ConvergenceLine";
 
 export function Federated() {
-  const { state } = useSimulationSocket();
+  const { state } = useSimulation();
 
   if (!state) {
     return <div className="loading">Connecting to the simulation engine…</div>;

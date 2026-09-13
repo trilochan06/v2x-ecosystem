@@ -117,13 +117,21 @@ export interface MetricsSummary {
     packet_delivery_ratio: number;
     avg_detection_latency_ticks: number;
     avg_alert_latency_ticks: number;
+    alert_samples: number;
+    detection_samples: number;
     messages_sent: number;
     local_kilobytes: number;
     local_kilobytes_per_tick: number;
     uplink_kilobytes: number;
     uplink_kilobytes_per_tick: number;
   };
-  traffic: { avg_trip_ticks: number; trips_completed: number; congestion_duration_pct: number };
+  traffic: {
+    segments_per_100_vehicle_ticks: number;
+    segment_transitions: number;
+    avg_trip_ticks: number;
+    trips_completed: number;
+    congestion_duration_pct: number;
+  };
   detection: {
     precision: number;
     recall: number;

@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { api } from "../api/client";
+import { CONFIGS } from "../sim/engine";
+import { REFERENCE } from "../sim/reference";
 import type { ArchitectureConfigState, ReferenceData } from "../types";
 
 const FLAGS: { key: keyof ArchitectureConfigState; label: string }[] = [
@@ -12,17 +12,8 @@ const FLAGS: { key: keyof ArchitectureConfigState; label: string }[] = [
 ];
 
 export function Architecture() {
-  const [ref, setRef] = useState<ReferenceData | null>(null);
-  const [configs, setConfigs] = useState<ArchitectureConfigState[]>([]);
-
-  useEffect(() => {
-    api.reference().then(setRef).catch(() => setRef(null));
-    api.architectures().then((r) => setConfigs(r.configs)).catch(() => setConfigs([]));
-  }, []);
-
-  if (!ref) {
-    return <div className="loading">Loading the design reference…</div>;
-  }
+  const ref: ReferenceData = REFERENCE;
+  const configs: ArchitectureConfigState[] = Object.values(CONFIGS);
 
   return (
     <div className="stack">

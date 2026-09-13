@@ -236,7 +236,10 @@ class SimulationEngine:
     # -- M1/M3/M6 ----------------------------------------------------------
     def _advance_vehicles(self) -> list[tuple[Vehicle, Message]]:
         outbound: list[tuple[Vehicle, Message]] = []
+        transitions = 0
+        moving = 0
         for v in self.vehicles.values():
+            previous_node = v.node
             messages, rerouted, trip_ticks = v.step(
                 self.tick,
                 allow_v2v=self.config.v2v_enabled,
@@ -249,6 +252,10 @@ class SimulationEngine:
                 self._log("v2v_reroute", f"{v.id} rerouted around congestion reported by peers.")
             if trip_ticks is not None:
                 self.metrics.trip_completed(trip_ticks)
+            if v.node != previous_node:
+                transitions += 1
+            moving += 1
+        self.metrics.sample_mobility(transitions, moving)
         return outbound
 
     # -- L2 ----------------------------------------------------------------

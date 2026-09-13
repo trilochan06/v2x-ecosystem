@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { useSimulationSocket } from "../api/useSimulationSocket";
+import { useSimulation } from "../sim/runtime";
 
 const PROBLEMS = [
   {
@@ -54,7 +54,7 @@ const CAPABILITIES = [
 ];
 
 export function Home() {
-  const { state, connected } = useSimulationSocket();
+  const { state, connected } = useSimulation();
 
   return (
     <div className="home">

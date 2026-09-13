@@ -48,7 +48,14 @@ class MetricsCollector:
     alert_latencies: list[int] = field(default_factory=list)
 
     # --- traffic impact ---------------------------------------------------
+    # `trip_times` only sees journeys that finish inside the run, which
+    # over-samples short routes -- a survivorship bias that makes the average
+    # depend on the window length. `segment_transitions / vehicle_ticks` has
+    # no such bias: every vehicle contributes every tick whether or not it
+    # ever reaches its destination, so it is the metric to compare on.
     trip_times: list[int] = field(default_factory=list)
+    segment_transitions: int = 0
+    vehicle_ticks: int = 0
     congested_samples: int = 0
     segment_samples: int = 0
 
@@ -111,6 +118,10 @@ class MetricsCollector:
     def trip_completed(self, ticks: int) -> None:
         self.trip_times.append(ticks)
 
+    def sample_mobility(self, transitions: int, vehicle_ticks: int) -> None:
+        self.segment_transitions += transitions
+        self.vehicle_ticks += vehicle_ticks
+
     def sample_segments(self, occupancies: list[float]) -> None:
         self.segment_samples += len(occupancies)
         self.congested_samples += sum(1 for o in occupancies if o >= CONGESTION_THRESHOLD)
@@ -141,6 +152,10 @@ class MetricsCollector:
                 "packet_delivery_ratio": round(_ratio(self.packets_delivered, self.packets_intended), 4),
                 "avg_detection_latency_ticks": round(_mean(self.detection_latencies), 2),
                 "avg_alert_latency_ticks": round(_mean(self.alert_latencies), 2),
+                # Corroborated alerts are rare events; a mean over one or two
+                # of them is noise, so the sample count travels with it.
+                "alert_samples": len(self.alert_latencies),
+                "detection_samples": len(self.detection_latencies),
                 "messages_sent": self.messages_sent,
                 "local_kilobytes": round(self.local_bytes / 1024, 1),
                 "local_kilobytes_per_tick": round(self.local_bytes / 1024 / max(self.total_ticks, 1), 3),
@@ -148,6 +163,10 @@ class MetricsCollector:
                 "uplink_kilobytes_per_tick": round(self.uplink_bytes / 1024 / max(self.total_ticks, 1), 3),
             },
             "traffic": {
+                "segments_per_100_vehicle_ticks": round(
+                    100 * _ratio(self.segment_transitions, self.vehicle_ticks), 3
+                ),
+                "segment_transitions": self.segment_transitions,
                 "avg_trip_ticks": round(_mean(self.trip_times), 2),
                 "trips_completed": len(self.trip_times),
                 "congestion_duration_pct": round(

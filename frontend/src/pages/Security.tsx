@@ -1,9 +1,8 @@
 import { useState } from "react";
-import { useSimulationSocket } from "../api/useSimulationSocket";
-import { commands } from "../api/client";
+import { commands, useSimulation } from "../sim/runtime";
 
 export function Security() {
-  const { state } = useSimulationSocket();
+  const { state } = useSimulation();
   const [lastAttack, setLastAttack] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -17,16 +16,11 @@ export function Security() {
     .sort((a, b) => a[1].trust_score - b[1].trust_score)
     .slice(0, 12);
 
-  const runReplay = async () => {
+  const runReplay = () => {
     setBusy(true);
-    try {
-      const res = await commands.replayAttack();
-      setLastAttack(`${res.blocked} of ${res.attempted} replayed frames rejected.`);
-    } catch {
-      setLastAttack("Attack injection failed.");
-    } finally {
-      setBusy(false);
-    }
+    const res = commands.replayAttack();
+    setLastAttack(`${res.blocked} of ${res.attempted} replayed frames rejected.`);
+    setBusy(false);
   };
 
   return (
