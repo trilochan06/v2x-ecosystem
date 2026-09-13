@@ -44,6 +44,12 @@ class MetricsCollector:
     local_bytes: int = 0
     uplink_bytes: int = 0
 
+    # The message *mix* by standard designator (CAM, DENM, probe). Which
+    # standard frames dominate the air is the interesting part of the
+    # overhead story, not just the total.
+    frames_by_designator: dict[str, int] = field(default_factory=dict)
+    bytes_by_designator: dict[str, int] = field(default_factory=dict)
+
     detection_latencies: list[int] = field(default_factory=list)
     alert_latencies: list[int] = field(default_factory=list)
 
@@ -72,7 +78,9 @@ class MetricsCollector:
     outage_service_up_ticks: int = 0
 
     # ---------------------------------------------------------------- comms
-    def record_broadcast(self, intended: int, delivered: int, size_bytes: int) -> None:
+    def record_broadcast(
+        self, intended: int, delivered: int, size_bytes: int, designator: str = ""
+    ) -> None:
         """One local V2X transmission. A broadcast is sent once on the air
         regardless of how many receivers decode it, so the frame is counted
         once -- not once per recipient."""
@@ -80,6 +88,11 @@ class MetricsCollector:
         self.packets_intended += intended
         self.packets_delivered += delivered
         self.local_bytes += size_bytes
+        if designator:
+            self.frames_by_designator[designator] = self.frames_by_designator.get(designator, 0) + 1
+            self.bytes_by_designator[designator] = (
+                self.bytes_by_designator.get(designator, 0) + size_bytes
+            )
 
     def record_uplink(self, size_bytes: int) -> None:
         """Bytes crossing the backhaul to the cloud: raw telemetry uploads,
@@ -161,6 +174,10 @@ class MetricsCollector:
                 "local_kilobytes_per_tick": round(self.local_bytes / 1024 / max(self.total_ticks, 1), 3),
                 "uplink_kilobytes": round(self.uplink_bytes / 1024, 1),
                 "uplink_kilobytes_per_tick": round(self.uplink_bytes / 1024 / max(self.total_ticks, 1), 3),
+                "frames_by_designator": dict(self.frames_by_designator),
+                "kilobytes_by_designator": {
+                    k: round(v / 1024, 2) for k, v in self.bytes_by_designator.items()
+                },
             },
             "traffic": {
                 "segments_per_100_vehicle_ticks": round(

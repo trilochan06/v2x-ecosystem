@@ -1,0 +1,79 @@
+[project]
+name = "v2x-ecosystem"
+version = "1.0.0"
+description = "Intelligent decentralized V2X ecosystem: edge intelligence, federated learning and digital twin."
+requires-python = ">=3.11"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["app"]
+
+# --------------------------------------------------------------------- lint
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+src = ["app", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "W",    # pycodestyle warnings
+    "I",    # import sorting
+    "UP",   # pyupgrade -- keep to modern syntax
+    "B",    # bugbear: real bug patterns, not style
+    "C4",   # comprehension clarity
+    "SIM",  # simplifiable constructs
+    "RET",  # return-path clarity
+    "ARG",  # unused arguments
+    "PTH",  # prefer pathlib over os.path
+]
+ignore = [
+    # Asserting in tests is the point of tests.
+    "B011",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests name fixtures and helpers freely, and a few deliberately hold
+# references they do not use.
+"tests/*" = ["ARG001", "ARG002"]
+# A data module: layer and module descriptions read straight from the project
+# design. Rewrapping the prose would make it harder to diff against the deck.
+"app/reference.py" = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+# --------------------------------------------------------------- type check
+[tool.mypy]
+python_version = "3.11"
+files = ["app"]
+# numpy, sklearn and joblib ship partial or no stubs; typing the boundary is
+# worth more than fighting their internals.
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+warn_unreachable = true
+
+# --------------------------------------------------------------------- test
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-q"
+
+[tool.coverage.run]
+source = ["app"]
+branch = true
+omit = ["app/reference.py"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+# The floor exists to catch a PR that deletes tests, not to chase 100%.
+# The suite currently sits around 93%.
+fail_under = 90

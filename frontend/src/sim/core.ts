@@ -191,14 +191,90 @@ export class CityGrid {
 }
 
 // ------------------------------------------------------------ messages
-export type MessageType =
-  | "hazard_report"
-  | "occupancy_ping"
-  | "telemetry_upload"
-  | "emergency_broadcast";
+// The ETSI cooperative-ITS message set. Mirrors
+// backend/app/network/messages.py -- see that module for the standards, the
+// ASN.1 UPER sizing and why certificate attachment is modelled.
 
-const SECURITY_HEADER_BYTES = 96;
-const BASE_HEADER_BYTES = 24;
+/** Which radio or link a frame travels over. */
+export type Bearer = "its-g5" | "backhaul";
+
+export type MessageType = "cam" | "denm-hazard" | "denm-eva" | "telemetry-upload";
+
+export interface MessageSpec {
+  designator: string;
+  standard: string;
+  label: string;
+  bearer: Bearer;
+  /** Representative ASN.1 UPER payload, excluding header and security. */
+  payloadBytes: number;
+}
+
+export const MESSAGE_SPECS: Record<MessageType, MessageSpec> = {
+  cam: {
+    designator: "CAM",
+    standard: "ETSI EN 302 637-2",
+    label: "Cooperative awareness",
+    bearer: "its-g5",
+    payloadBytes: 117,
+  },
+  "denm-hazard": {
+    designator: "DENM",
+    standard: "ETSI EN 302 637-3",
+    label: "Hazard notification",
+    bearer: "its-g5",
+    payloadBytes: 180,
+  },
+  "denm-eva": {
+    designator: "DENM",
+    standard: "ETSI EN 302 637-3",
+    label: "Emergency vehicle approaching",
+    bearer: "its-g5",
+    payloadBytes: 180,
+  },
+  "telemetry-upload": {
+    designator: "probe",
+    standard: "non-standard backhaul",
+    label: "Raw probe-data upload",
+    bearer: "backhaul",
+    payloadBytes: 72,
+  },
+};
+
+export const ITS_PDU_HEADER_BYTES = 4;
+export const BACKHAUL_FRAMING_BYTES = 20;
+export const SIGNATURE_BYTES = 64;
+export const SIGNED_DATA_OVERHEAD_BYTES = 17;
+export const CERTIFICATE_BYTES = 117;
+export const CERTIFICATE_DIGEST_BYTES = 8;
+export const CERT_ATTACH_INTERVAL_MESSAGES = 10;
+/** One waypoint of a predicted emergency path plus its ETA. */
+export const PATH_POINT_BYTES = 12;
+
+/** DENM causeCode values from the TS 102 894-2 Common Data Dictionary. */
+export const CAUSE_CODE = {
+  ACCIDENT: 2,
+  ADVERSE_WEATHER_ADHESION: 6,
+  HAZARDOUS_LOCATION_SURFACE_CONDITION: 9,
+  ADVERSE_WEATHER_VISIBILITY: 19,
+  STATIONARY_VEHICLE: 94,
+  EMERGENCY_VEHICLE_APPROACHING: 95,
+  DANGEROUS_SITUATION: 99,
+} as const;
+
+/** Hazard vocabulary mapped onto (causeCode, subCauseCode). */
+export const HAZARD_CAUSE_CODES: Record<string, [number, number]> = {
+  accident: [CAUSE_CODE.ACCIDENT, 0],
+  stalled_vehicle: [CAUSE_CODE.STATIONARY_VEHICLE, 2], // vehicleBreakdown
+  hard_braking: [CAUSE_CODE.DANGEROUS_SITUATION, 1], // emergencyElectronicBrakeEngaged
+  waterlogging: [CAUSE_CODE.HAZARDOUS_LOCATION_SURFACE_CONDITION, 0], // no CDD subcause
+  oil_spill: [CAUSE_CODE.ADVERSE_WEATHER_ADHESION, 2], // fuelOnTheRoad
+  fog_bank: [CAUSE_CODE.ADVERSE_WEATHER_VISIBILITY, 1], // fog
+};
+
+export function causeFor(hazardType: string): [number, number] {
+  return HAZARD_CAUSE_CODES[hazardType] ?? [CAUSE_CODE.DANGEROUS_SITUATION, 0];
+}
+
 let msgCounter = 1;
 
 export interface Message {
@@ -210,14 +286,77 @@ export interface Message {
   ttl: number;
   createdTick: number;
   signed: boolean;
+  /** Content whose size genuinely varies: an emergency path, a probe batch. */
+  variableBytes: number;
+  /** Set before the frame goes on the air, by CertificateAttachmentPolicy. */
+  certificateAttached: boolean;
 }
 
-export function makeMessage(m: Omit<Message, "id">): Message {
-  return { ...m, id: `msg-${msgCounter++}` };
+type MessageInit = Omit<Message, "id" | "variableBytes" | "certificateAttached"> &
+  Partial<Pick<Message, "variableBytes" | "certificateAttached">>;
+
+export function makeMessage(m: MessageInit): Message {
+  return { variableBytes: 0, certificateAttached: false, ...m, id: `msg-${msgCounter++}` };
+}
+
+export function messageSpec(m: Message): MessageSpec {
+  return MESSAGE_SPECS[m.type];
+}
+
+/** The 1609.2 / TS 103 097 envelope. Backhaul frames ride TLS and pay none. */
+export function securityBytes(m: Message): number {
+  const spec = MESSAGE_SPECS[m.type];
+  if (!m.signed || spec.bearer !== "its-g5") return 0;
+  const credential = m.certificateAttached ? CERTIFICATE_BYTES : CERTIFICATE_DIGEST_BYTES;
+  return SIGNATURE_BYTES + SIGNED_DATA_OVERHEAD_BYTES + credential;
 }
 
 export function messageBytes(m: Message): number {
-  let payloadBytes = 0;
-  for (const [k, v] of Object.entries(m.payload)) payloadBytes += k.length + String(v).length;
-  return BASE_HEADER_BYTES + payloadBytes + (m.signed ? SECURITY_HEADER_BYTES : 0);
+  const spec = MESSAGE_SPECS[m.type];
+  const framing = spec.bearer === "its-g5" ? ITS_PDU_HEADER_BYTES : BACKHAUL_FRAMING_BYTES;
+  return framing + spec.payloadBytes + m.variableBytes + securityBytes(m);
+}
+
+/** What a frame's content costs uploaded over TLS instead of broadcast. */
+export function backhaulBytes(m: Message): number {
+  return BACKHAUL_FRAMING_BYTES + MESSAGE_SPECS[m.type].payloadBytes + m.variableBytes;
+}
+
+/**
+ * Decides whether a frame carries a full certificate or an 8-byte digest.
+ *
+ * Keyed by pseudonym, so rotating one invalidates the receivers' cached
+ * certificate and forces a re-attach -- the bandwidth price of unlinkability.
+ */
+export class CertificateAttachmentPolicy {
+  private counts = new Map<string, number>();
+  certificatesAttached = 0;
+  digestsAttached = 0;
+
+  constructor(private readonly interval = CERT_ATTACH_INTERVAL_MESSAGES) {
+    this.interval = Math.max(1, interval);
+  }
+
+  attach(stationKey: string): boolean {
+    const seen = this.counts.get(stationKey) ?? 0;
+    this.counts.set(stationKey, seen + 1);
+    const full = seen % this.interval === 0;
+    if (full) this.certificatesAttached++;
+    else this.digestsAttached++;
+    return full;
+  }
+
+  get bytesSaved(): number {
+    return this.digestsAttached * (CERTIFICATE_BYTES - CERTIFICATE_DIGEST_BYTES);
+  }
+
+  snapshot() {
+    return {
+      frames_secured: this.certificatesAttached + this.digestsAttached,
+      certificates_attached: this.certificatesAttached,
+      digests_attached: this.digestsAttached,
+      attach_interval: this.interval,
+      kilobytes_saved: Math.round((this.bytesSaved / 1024) * 100) / 100,
+    };
+  }
 }

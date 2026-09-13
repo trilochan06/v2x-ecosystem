@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { SCENARIOS, runSuite } from "../sim/experiments";
-import { BarComparison, SERIES_COLORS } from "../components/charts/BarComparison";
+import { DEFAULT_REPEATS, SCENARIOS, runSuite } from "../sim/experiments";
+import { BarComparison } from "../components/charts/BarComparison";
+import { SERIES_COLORS } from "../components/charts/palette";
 import type { ExperimentSuite, Scenario } from "../types";
 
 /** Below this many corroborated alerts, the latency average is noise and the
@@ -18,18 +19,21 @@ export function Experiments() {
   const [scenario, setScenario] = useState("normal");
   const [ticks, setTicks] = useState(250);
   const [seed, setSeed] = useState(4242);
+  const [repeats, setRepeats] = useState(DEFAULT_REPEATS);
   const [suite, setSuite] = useState<ExperimentSuite | null>(null);
   const [running, setRunning] = useState(false);
+  const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [error, setError] = useState<string | null>(null);
 
   const run = async () => {
     setRunning(true);
     setError(null);
+    setProgress({ done: 0, total: 3 * repeats });
     // Yield once so the button repaints as "running" before the sweep blocks
-    // the main thread for a second or two.
+    // the main thread.
     await new Promise((resolve) => setTimeout(resolve, 30));
     try {
-      setSuite(runSuite(scenario, ticks, seed));
+      setSuite(runSuite(scenario, ticks, seed, repeats));
     } catch (e) {
       console.error(e);
       setError("The sweep failed to run.");
@@ -80,13 +84,30 @@ export function Experiments() {
           />
         </div>
         <div className="field">
-          <label htmlFor="seed">Seed</label>
+          <label htmlFor="seed">First seed</label>
           <input id="seed" type="number" value={seed} onChange={(e) => setSeed(Number(e.target.value))} />
         </div>
+        <div className="field">
+          <label htmlFor="repeats">Seeds per configuration</label>
+          <select id="repeats" value={repeats} onChange={(e) => setRepeats(Number(e.target.value))}>
+            <option value={1}>1 — no interval</option>
+            <option value={3}>3 — quick</option>
+            <option value={5}>5 — recommended</option>
+            <option value={10}>10 — slow</option>
+          </select>
+        </div>
         <button className="btn primary" onClick={run} disabled={running}>
-          {running ? "Running three simulations…" : "Run the sweep"}
+          {running ? `Running ${progress.total} simulations…` : "Run the sweep"}
         </button>
       </section>
+
+      {running && progress.total > 0 && (
+        <div className="notice" role="status" aria-live="polite">
+          Running {progress.total} simulations — {repeats} seed{repeats === 1 ? "" : "s"} for each of
+          the three architectures. The engine runs in this tab, so the page will be unresponsive
+          until it finishes.
+        </div>
+      )}
 
       {error && <div className="notice bad">{error}</div>}
 
@@ -102,9 +123,12 @@ export function Experiments() {
           <section className="panel wide">
             <h2>Headline results — {suite.scenario.label}</h2>
             <p className="muted small">
-              {suite.scenario.description} · {suite.ticks} ticks · seed {suite.seed} · {suite.scenario.vehicles} vehicles
+              {suite.scenario.description} · {suite.ticks} ticks · {suite.scenario.vehicles} vehicles
               {suite.scenario.malicious > 0 && `, ${suite.scenario.malicious} attackers`}
-              {suite.scenario.ambulances > 0 && `, ${suite.scenario.ambulances} ambulances`}
+              {suite.scenario.ambulances > 0 && `, ${suite.scenario.ambulances} ambulances`} ·{" "}
+              {suite.repeats === 1
+                ? `single seed ${suite.seed}`
+                : `${suite.repeats} seeds (${suite.seeds[0]}–${suite.seeds[suite.seeds.length - 1]}), mean ± 95% CI`}
             </p>
             <div className="headline-grid">
               {Object.entries(suite.headline).map(([key, h]) => {
@@ -128,17 +152,38 @@ export function Experiments() {
                           {h.baseline} <span className="arrow">→</span> {h.proposed}
                           <span className="headline-unit"> {h.unit}</span>
                         </span>
+                        {h.samples > 1 && (
+                          <span className="headline-ci">
+                            ±{h.baseline_half_width} → ±{h.proposed_half_width} (95% CI, n=
+                            {h.samples})
+                          </span>
+                        )}
                         <span className={h.improvement_pct >= 0 ? "delta good" : "delta bad"}>
                           {h.improvement_pct >= 0 ? "improved " : "worse "}
                           {Math.abs(h.improvement_pct)}
                           {key === "availability_during_outage" ? " pts" : "%"}
                         </span>
+                        {/* Overlapping intervals mean the seeds do not
+                            separate these two, and saying so is the whole
+                            point of running more than one. */}
+                        {h.samples > 1 && !h.separated && (
+                          <span className="delta muted">
+                            intervals overlap — not separated at this sample size
+                          </span>
+                        )}
                       </>
                     )}
                   </div>
                 );
               })}
             </div>
+            {suite.repeats === 1 && (
+              <p className="notice small">
+                One seed is a sample, not a result. Set “seeds per configuration” to 5 to get
+                confidence intervals and a statement of whether the configurations actually
+                separate.
+              </p>
+            )}
           </section>
 
           <div className="chart-grid">

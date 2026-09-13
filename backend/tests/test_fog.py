@@ -4,7 +4,6 @@ from app.simulation.world import CityGrid
 
 
 def test_fog_clusters_are_geographically_coherent():
-    grid = CityGrid(size=6)
     rsu_ids = ["rsu-1", "rsu-2", "rsu-3", "rsu-4"]
     coords = {
         "rsu-1": (0.0, 0.0),

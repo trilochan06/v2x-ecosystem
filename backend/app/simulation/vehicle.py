@@ -24,7 +24,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Literal
 
-from app.network.messages import Message, MessageType
+from app.network.messages import Message, MessageType, cause_for
 from app.network.security import sign
 from app.simulation.world import HAZARD_TYPES, CityGrid
 
@@ -182,13 +182,19 @@ class Vehicle:
         return None
 
     def _hazard_message(self, seg, hazard_type: str, confidence: float, tick: int) -> Message:
+        # A DENM identifies what it saw with a CauseCode/SubCauseCode from the
+        # TS 102 894-2 dictionary, not a free-text label -- that is what makes
+        # it interpretable by equipment that has never heard of this project.
+        cause_code, sub_cause_code = cause_for(hazard_type)
         payload = {
             "segment_id": seg.id,
             "hazard_type": hazard_type,
+            "cause_code": cause_code,
+            "sub_cause_code": sub_cause_code,
             "confidence": confidence,
         }
         return Message(
-            type=MessageType.HAZARD_REPORT,
+            type=MessageType.DENM_HAZARD,
             sender_id=self.id,
             pseudonym=self.pseudonym,
             payload=payload,
@@ -204,7 +210,7 @@ class Vehicle:
             return None
         payload = {"segment_id": seg.id, "occupancy": round(seg.occupancy, 3)}
         return Message(
-            type=MessageType.OCCUPANCY_PING,
+            type=MessageType.CAM,
             sender_id=self.id,
             pseudonym=self.pseudonym,
             payload=payload,

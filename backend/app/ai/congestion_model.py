@@ -40,7 +40,7 @@ class CongestionPredictor:
         self.model.fit(X, y)
         self.feature_means = X.mean(axis=0)
         self.feature_stds = X.std(axis=0) + 1e-6
-        self.importances = dict(zip(FEATURE_NAMES, self.model.feature_importances_))
+        self.importances = dict(zip(FEATURE_NAMES, self.model.feature_importances_, strict=True))
 
     def build_features(self, segment, tick: int, neighbor_avg: float | None = None) -> list[float]:
         """Feature vector for one segment. The incident flag is the

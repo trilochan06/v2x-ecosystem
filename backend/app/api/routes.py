@@ -4,7 +4,13 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.config import CONFIGS
-from app.experiments.runner import list_configs, list_scenarios, run_suite
+from app.experiments.runner import (
+    DEFAULT_REPEATS,
+    MAX_REPEATS,
+    list_configs,
+    list_scenarios,
+    run_suite,
+)
 from app.reference import LAYERS, MODULES, TEAM
 from app.runtime import get_engine, rebuild_engine
 
@@ -27,6 +33,8 @@ class ExperimentRequest(BaseModel):
     scenario: str = "normal"
     ticks: int = Field(default=250, ge=60, le=800)
     seed: int = 4242
+    #: Seeds per configuration. Anything above 1 gets confidence intervals.
+    repeats: int = Field(default=DEFAULT_REPEATS, ge=1, le=MAX_REPEATS)
 
 
 # ------------------------------------------------------------------ status
@@ -133,6 +141,7 @@ def security():
     return {
         "pseudonyms": engine.authority.snapshot(len(engine.vehicles)),
         "replay": engine.replay_guard.snapshot(),
+        "certificates": engine.cert_policy.snapshot(),
         "trust": engine.trust.snapshot(),
         "revoked": sorted(engine.authority.revoked),
     }
@@ -146,4 +155,6 @@ def experiment_scenarios():
 
 @router.post("/experiments/run")
 def experiments_run(req: ExperimentRequest):
-    return run_suite(scenario_key=req.scenario, ticks=req.ticks, seed=req.seed)
+    return run_suite(
+        scenario_key=req.scenario, ticks=req.ticks, seed=req.seed, repeats=req.repeats
+    )

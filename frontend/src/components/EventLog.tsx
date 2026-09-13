@@ -24,11 +24,21 @@ const TYPE_ICON: Record<string, string> = {
 export function EventLog({ state }: { state: SimulationState }) {
   return (
     <div className="panel">
-      <h2>Event Feed</h2>
-      <div className="event-log">
+      <h2 id="event-feed-heading">Event Feed</h2>
+      {/* A screen reader should hear new events as they arrive, but politely
+          so it never interrupts what the user is already reading. */}
+      <div
+        className="event-log"
+        role="log"
+        aria-live="polite"
+        aria-labelledby="event-feed-heading"
+      >
         {state.events.map((e, i) => (
           <div key={i} className="event-row">
-            <span className="event-icon">{TYPE_ICON[e.type] ?? "•"}</span>
+            {/* The icon duplicates the message text, so it is decoration. */}
+            <span className="event-icon" aria-hidden="true">
+              {TYPE_ICON[e.type] ?? "•"}
+            </span>
             <span className="event-tick">t{e.tick}</span>
             <span>{e.message}</span>
           </div>

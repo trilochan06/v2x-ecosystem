@@ -10,7 +10,7 @@ many vehicles are on the road.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass
@@ -58,7 +58,13 @@ class RSUNetwork:
             self.vehicle_cell[vehicle_id] = new_rsu
             if current:
                 self.handover_log.append(
-                    {"tick": tick, "vehicle_id": vehicle_id, "from": current, "to": new_rsu, "reason": "self_heal"}
+                    {
+                        "tick": tick,
+                        "vehicle_id": vehicle_id,
+                        "from": current,
+                        "to": new_rsu,
+                        "reason": "self_heal",
+                    }
                 )
                 if len(self.handover_log) > 200:
                     self.handover_log.pop(0)

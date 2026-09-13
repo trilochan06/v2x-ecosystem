@@ -83,8 +83,6 @@ export function CityMap({ state, selectedSegment, onSelectSegment }: Props) {
     state.vehicles.filter((v) => v.yielding || v.kind === "ambulance").map((v) => v.segment_id).filter(Boolean)
   );
 
-  const rsuByNode = new Map(state.rsus.map((r) => [r.node, r]));
-
   return (
     <svg viewBox={`0 0 ${width} ${height}`} className="city-map" role="img" aria-label="Live city digital twin">
       <defs>

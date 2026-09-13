@@ -13,7 +13,7 @@ even when an RSU is down or the internet is unreachable ("mesh fallback").
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from app.network.messages import Message
 from app.simulation.world import CityGrid

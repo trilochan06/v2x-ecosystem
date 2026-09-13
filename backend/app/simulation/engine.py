@@ -13,17 +13,22 @@ from __future__ import annotations
 
 import itertools
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from app.ai.congestion_model import CongestionPredictor
+from app.ai.federated import FederatedCoordinator
 from app.config import DEFAULT_CONFIG, ArchitectureConfig
 from app.decisions.alerts import AlertEngine
-from app.ai.federated import FederatedCoordinator
 from app.emergency.corridor import EmergencyCorridorManager
 from app.metrics import MetricsCollector
 from app.network.corroboration import CorroborationEngine
 from app.network.gossip import EtherBus, RecipientHandle
-from app.network.messages import Message, MessageType
+from app.network.messages import (
+    CertificateAttachmentPolicy,
+    Message,
+    MessageType,
+    backhaul_bytes,
+)
 from app.network.pseudonyms import PseudonymAuthority, ReplayGuard
 from app.network.rsu_network import RSUNetwork
 from app.network.security import TrustRegistry, verify
@@ -31,7 +36,7 @@ from app.simulation.digital_twin import DigitalTwin
 from app.simulation.fog import FogNode, build_fog_clusters
 from app.simulation.rsu import RSU
 from app.simulation.traffic_light import TrafficLight
-from app.simulation.vehicle import Vehicle
+from app.simulation.vehicle import Vehicle, VehicleKind
 from app.simulation.world import HAZARD_TYPES, CityGrid, node_id
 
 MAX_EVENTS = 150
@@ -73,6 +78,7 @@ class SimulationEngine:
         self.federation = FederatedCoordinator()
         self.authority = PseudonymAuthority()
         self.replay_guard = ReplayGuard()
+        self.cert_policy = CertificateAttachmentPolicy()
         self.alerts = AlertEngine(cloud_round_trip_ticks=self.config.cloud_round_trip_ticks)
 
         self.vehicles: dict[str, Vehicle] = {}
@@ -100,7 +106,8 @@ class SimulationEngine:
             self.rsu_network.register_rsu(rsu_id, node)
             self.bus.register(rsu_id)
             self.traffic_lights[node] = TrafficLight(id=f"light-{node}", node=node)
-            rsu_coords[rsu_id] = tuple(float(c) for c in self.grid.coords(node))
+            cx, cy = self.grid.coords(node)
+            rsu_coords[rsu_id] = (float(cx), float(cy))
 
         for fog in build_fog_clusters(list(self.rsus.keys()), rsu_coords, cluster_size=FOG_CLUSTER_SIZE):
             self.fog_nodes[fog.id] = fog
@@ -128,7 +135,7 @@ class SimulationEngine:
             return [size // 2]
         return [round(i * (size - 1) / (n - 1)) for i in range(n)]
 
-    def spawn_vehicle(self, kind: str = "car") -> Vehicle:
+    def spawn_vehicle(self, kind: VehicleKind = "car") -> Vehicle:
         node = self.rng.choice(list(self.grid.nodes.keys()))
         vid = f"{kind}-{next(self._vehicle_counter)}"
         v = Vehicle(
@@ -155,7 +162,10 @@ class SimulationEngine:
             return
         self.rsus[rsu_id].alive = alive
         self.rsu_network.set_alive(rsu_id, alive)
-        self._log("rsu_recovered" if alive else "rsu_fault", f"{rsu_id} {'restored' if alive else 'went DOWN'}.")
+        self._log(
+            "rsu_recovered" if alive else "rsu_fault",
+            f"{rsu_id} {'restored' if alive else 'went DOWN'}.",
+        )
 
     def set_cloud_online(self, online: bool) -> None:
         self.cloud_online = online
@@ -186,10 +196,14 @@ class SimulationEngine:
         if donor is None:
             return {"attempted": 0, "blocked": 0}
         stale = Message(
-            type=MessageType.HAZARD_REPORT,
+            type=MessageType.DENM_HAZARD,
             sender_id=donor.id,
             pseudonym=donor.pseudonym,
-            payload={"segment_id": donor.current_segment_id or "0-0_1-0", "hazard_type": "accident", "confidence": 0.9},
+            payload={
+                "segment_id": donor.current_segment_id or "0-0_1-0",
+                "hazard_type": "accident",
+                "confidence": 0.9,
+            },
             created_tick=max(0, self.tick - 30),  # captured long ago
             signature="replayed",
         )
@@ -276,11 +290,19 @@ class SimulationEngine:
                 self._upload_to_cloud(sender, msg, service_up)
                 continue
 
+            # TS 103 097: a full certificate about once a second, an 8-byte
+            # HashedId8 digest otherwise. Keyed by pseudonym, so a rotation
+            # forces a re-attach -- the bandwidth price of unlinkability.
+            msg.certificate_attached = self.cert_policy.attach(msg.pseudonym or msg.sender_id)
             load = self._channel_load(sender.node)
-            delivered, intended = self.bus.broadcast(msg, sender.node, self.tick, recipients, channel_load=load)
+            delivered, intended = self.bus.broadcast(
+                msg, sender.node, self.tick, recipients, channel_load=load
+            )
             self.messages_this_tick += len(delivered)
             self.bytes_this_tick += msg.size_bytes
-            self.metrics.record_broadcast(intended, len(delivered), msg.size_bytes)
+            self.metrics.record_broadcast(
+                intended, len(delivered), msg.size_bytes, msg.spec.designator
+            )
 
             for node_id_ in delivered:
                 if not self._admit(node_id_, msg):
@@ -288,9 +310,9 @@ class SimulationEngine:
                     continue
                 if node_id_ in self.rsus and self.rsus[node_id_].alive:
                     self.rsus[node_id_].messages_handled += 1
-                    if msg.type == MessageType.HAZARD_REPORT:
+                    if msg.type == MessageType.DENM_HAZARD:
                         seen_reports[msg.id] = (sender.id, msg)
-                elif msg.type == MessageType.OCCUPANCY_PING:
+                elif msg.type == MessageType.CAM:
                     peer = self.vehicles.get(node_id_)
                     if peer is not None:
                         peer.receive_occupancy_ping(
@@ -301,7 +323,7 @@ class SimulationEngine:
             for due_tick, sender_id, msg in list(self._cloud_inbox):
                 if due_tick <= self.tick:
                     self._cloud_inbox.remove((due_tick, sender_id, msg))
-                    if service_up and msg.type == MessageType.HAZARD_REPORT:
+                    if service_up and msg.type == MessageType.DENM_HAZARD:
                         seen_reports[msg.id] = (sender_id, msg)
 
         self._pending_reports = list(seen_reports.values())
@@ -327,12 +349,22 @@ class SimulationEngine:
         self.metrics.record_uplink(frame.size_bytes)
         self.bytes_this_tick += frame.size_bytes
         self.messages_this_tick += 1
-        self.metrics.record_broadcast(intended=1, delivered=1 if service_up else 0, size_bytes=0)
+        self.metrics.record_broadcast(
+            intended=1,
+            delivered=1 if service_up else 0,
+            size_bytes=0,
+            designator=frame.spec.designator,
+        )
 
     def _upload_to_cloud(self, sender: Vehicle, msg: Message, service_up: bool) -> None:
-        """A hazard observation on the uplink, awaiting its cloud round trip."""
-        self.metrics.record_uplink(msg.size_bytes)
-        self.bytes_this_tick += msg.size_bytes
+        """A hazard observation on the uplink, awaiting its cloud round trip.
+
+        A vehicle with no sidelink radio does not emit a DENM; it uploads the
+        same observation as a record over TLS, so it is sized as backhaul
+        traffic rather than as a secured ITS-G5 frame."""
+        size = backhaul_bytes(msg)
+        self.metrics.record_uplink(size)
+        self.bytes_this_tick += size
         if service_up:
             self._cloud_inbox.append((self.tick + self.config.cloud_round_trip_ticks, sender.id, msg))
 
@@ -432,8 +464,7 @@ class SimulationEngine:
 
     def _run_infrastructure(self, service_up: bool) -> None:
         for rsu in self.rsus.values():
-            if rsu.alive and self.cloud_online:
-                if rsu.build_digest(self.tick, self.rsu_network) is not None:
+            if rsu.alive and self.cloud_online and rsu.build_digest(self.tick, self.rsu_network) is not None:
                     # A digest is a summary of a whole cell: ~40 bytes,
                     # versus one frame per vehicle per tick.
                     self.metrics.record_uplink(40)
@@ -443,7 +474,11 @@ class SimulationEngine:
                 was_alert = fog.alert
                 fog.aggregate(self.tick, self.rsus, self.rsu_network)
                 if fog.alert and not was_alert:
-                    self._log("fog_alert", f"{fog.id} regional congestion alert across {', '.join(fog.member_rsu_ids)}.")
+                    self._log(
+                        "fog_alert",
+                        f"{fog.id} regional congestion alert across "
+                        f"{', '.join(fog.member_rsu_ids)}.",
+                    )
                 elif was_alert and not fog.alert:
                     self._log("fog_recovered", f"{fog.id} regional congestion cleared.")
 
@@ -464,6 +499,31 @@ class SimulationEngine:
         ambulances = [v for v in self.vehicles.values() if v.kind == "ambulance"]
         if ambulances and self.config.emergency_corridor and service_up:
             self.corridor_mgr.step(self.tick, ambulances, list(self.vehicles.values()), self.traffic_lights)
+            self._transmit_corridor_frames()
+
+    def _transmit_corridor_frames(self) -> None:
+        """Put the corridor's DENMs on the air and pay for them.
+
+        These frames used to be built and dropped on the floor, which meant
+        the emergency corridor appeared to cost no bandwidth at all."""
+        frames = self.corridor_mgr.drain_frames()
+        if not frames:
+            return
+        recipients = self._recipient_handles()
+        for frame in frames:
+            origin = self.vehicles.get(frame.sender_id)
+            if origin is None:
+                continue
+            frame.certificate_attached = self.cert_policy.attach(frame.pseudonym or frame.sender_id)
+            load = self._channel_load(origin.node)
+            delivered, intended = self.bus.broadcast(
+                frame, origin.node, self.tick, recipients, channel_load=load
+            )
+            self.messages_this_tick += len(delivered)
+            self.bytes_this_tick += frame.size_bytes
+            self.metrics.record_broadcast(
+                intended, len(delivered), frame.size_bytes, frame.spec.designator
+            )
 
     def _hazard_lifecycle(self) -> None:
         if self.auto_hazards and self.rng.random() < HAZARD_SPAWN_PROBABILITY:
@@ -511,7 +571,12 @@ class SimulationEngine:
             ],
             "vehicles": [v.to_state() for v in self.vehicles.values()],
             "rsus": [
-                {**rsu.to_state(), "cell_size": sum(1 for c in self.rsu_network.vehicle_cell.values() if c == rsu.id)}
+                {
+                    **rsu.to_state(),
+                    "cell_size": sum(
+                        1 for c in self.rsu_network.vehicle_cell.values() if c == rsu.id
+                    ),
+                }
                 for rsu in self.rsus.values()
             ],
             "fog_nodes": [f.to_state() for f in self.fog_nodes.values()],
@@ -520,6 +585,7 @@ class SimulationEngine:
             "security": {
                 "pseudonyms": self.authority.snapshot(len(self.vehicles)),
                 "replay": self.replay_guard.snapshot(),
+                "certificates": self.cert_policy.snapshot(),
             },
             "federated": self.federation.snapshot(),
             "digital_twin": self.twin.snapshot(self.tick),

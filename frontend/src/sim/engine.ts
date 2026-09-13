@@ -13,7 +13,19 @@ import {
   VehicleKind,
   buildFogClusters,
 } from "./agents";
-import { CityGrid, HAZARD_TYPES, Message, Rng, makeMessage, makeRng, messageBytes, nodeId } from "./core";
+import {
+  CertificateAttachmentPolicy,
+  CityGrid,
+  HAZARD_TYPES,
+  MESSAGE_SPECS,
+  Message,
+  Rng,
+  backhaulBytes,
+  makeMessage,
+  makeRng,
+  messageBytes,
+  nodeId,
+} from "./core";
 import {
   CorroborationEngine,
   EtherBus,
@@ -51,14 +63,23 @@ export class MetricsCollector {
   totalTicks = 0;
   outageTicks = 0;
   outageServiceUpTicks = 0;
+  // The message mix by standard designator (CAM, DENM, probe). Which
+  // standard frames dominate the air is the interesting part of the overhead
+  // story, not just the total.
+  framesByDesignator = new Map<string, number>();
+  bytesByDesignator = new Map<string, number>();
   private episodes = new Map<string, { started: number; detected: number | null }>();
   private closed: { detected: number | null }[] = [];
 
-  recordBroadcast(intended: number, delivered: number, sizeBytes: number) {
+  recordBroadcast(intended: number, delivered: number, sizeBytes: number, designator = "") {
     this.messagesSent += 1;
     this.packetsIntended += intended;
     this.packetsDelivered += delivered;
     this.localBytes += sizeBytes;
+    if (designator) {
+      this.framesByDesignator.set(designator, (this.framesByDesignator.get(designator) ?? 0) + 1);
+      this.bytesByDesignator.set(designator, (this.bytesByDesignator.get(designator) ?? 0) + sizeBytes);
+    }
   }
 
   recordUplink(sizeBytes: number) {
@@ -141,6 +162,10 @@ export class MetricsCollector {
         local_kilobytes_per_tick: r3(this.localBytes / 1024 / Math.max(this.totalTicks, 1)),
         uplink_kilobytes: r1(this.uplinkBytes / 1024),
         uplink_kilobytes_per_tick: r3(this.uplinkBytes / 1024 / Math.max(this.totalTicks, 1)),
+        frames_by_designator: Object.fromEntries(this.framesByDesignator),
+        kilobytes_by_designator: Object.fromEntries(
+          [...this.bytesByDesignator].map(([k, v]) => [k, r2(v / 1024)]),
+        ),
       },
       traffic: {
         segments_per_100_vehicle_ticks: r3(100 * ratio(this.segmentTransitions, this.vehicleTicks)),
@@ -253,6 +278,7 @@ export class SimulationEngine {
   trust = new TrustRegistry();
   authority: PseudonymAuthority;
   replayGuard = new ReplayGuard();
+  certPolicy = new CertificateAttachmentPolicy();
   twin: DigitalTwin;
   alerts: AlertEngine;
   corridor: EmergencyCorridorManager;
@@ -375,7 +401,7 @@ export class SimulationEngine {
     const victim = [...this.rsus.keys()][0];
     if (!victim) return { attempted: 0, blocked: 0 };
     const stale = makeMessage({
-      type: "hazard_report",
+      type: "denm-hazard",
       senderId: "replayed",
       pseudonym: "",
       payload: { segment_id: "0-0_1-0", hazard_type: "accident", confidence: 0.9 },
@@ -457,8 +483,11 @@ export class SimulationEngine {
 
     for (const { vehicle, msg } of outbound) {
       if (!this.config.v2v_enabled) {
-        this.metrics.recordUplink(messageBytes(msg));
-        this.bytesThisTick += messageBytes(msg);
+        // A vehicle with no sidelink radio does not emit a DENM; it uploads
+        // the same observation over TLS, so it is sized as backhaul traffic.
+        const uplink = backhaulBytes(msg);
+        this.metrics.recordUplink(uplink);
+        this.bytesThisTick += uplink;
         if (serviceUp)
           this.cloudInbox.push({
             due: this.tick + this.config.cloud_round_trip_ticks,
@@ -468,12 +497,16 @@ export class SimulationEngine {
         continue;
       }
 
+      // TS 103 097: a full certificate about once a second, an 8-byte
+      // HashedId8 digest otherwise. Keyed by pseudonym, so a rotation forces
+      // a re-attach -- the bandwidth price of unlinkability.
+      msg.certificateAttached = this.certPolicy.attach(msg.pseudonym || msg.senderId);
       const load = this.channelLoad(vehicle.node);
       const { delivered, intended } = this.bus.broadcast(msg, vehicle.node, this.tick, recipients, load);
       const bytes = messageBytes(msg);
       this.messagesThisTick += delivered.length;
       this.bytesThisTick += bytes;
-      this.metrics.recordBroadcast(intended, delivered.length, bytes);
+      this.metrics.recordBroadcast(intended, delivered.length, bytes, MESSAGE_SPECS[msg.type].designator);
 
       for (const nodeIdent of delivered) {
         if (!this.admit(nodeIdent, msg)) {
@@ -483,8 +516,8 @@ export class SimulationEngine {
         const rsu = this.rsus.get(nodeIdent);
         if (rsu?.alive) {
           rsu.messagesHandled += 1;
-          if (msg.type === "hazard_report") seen.set(msg.id, { senderId: vehicle.id, msg });
-        } else if (msg.type === "occupancy_ping") {
+          if (msg.type === "denm-hazard") seen.set(msg.id, { senderId: vehicle.id, msg });
+        } else if (msg.type === "cam") {
           this.vehicles
             .get(nodeIdent)
             ?.receiveOccupancyPing(String(msg.payload.segment_id), Number(msg.payload.occupancy), this.tick);
@@ -496,7 +529,7 @@ export class SimulationEngine {
       const remaining: typeof this.cloudInbox = [];
       for (const entry of this.cloudInbox) {
         if (entry.due <= this.tick) {
-          if (serviceUp && entry.msg.type === "hazard_report")
+          if (serviceUp && entry.msg.type === "denm-hazard")
             seen.set(entry.msg.id, { senderId: entry.senderId, msg: entry.msg });
         } else remaining.push(entry);
       }
@@ -508,7 +541,7 @@ export class SimulationEngine {
 
   private uploadTelemetry(vehicle: Vehicle, serviceUp: boolean) {
     const frame = makeMessage({
-      type: "telemetry_upload",
+      type: "telemetry-upload",
       senderId: vehicle.id,
       pseudonym: vehicle.pseudonym,
       payload: {
@@ -526,7 +559,7 @@ export class SimulationEngine {
     this.metrics.recordUplink(bytes);
     this.bytesThisTick += bytes;
     this.messagesThisTick += 1;
-    this.metrics.recordBroadcast(1, serviceUp ? 1 : 0, 0);
+    this.metrics.recordBroadcast(1, serviceUp ? 1 : 0, 0, MESSAGE_SPECS[frame.type].designator);
   }
 
   private admit(receiverId: string, msg: Message): boolean {
@@ -649,8 +682,29 @@ export class SimulationEngine {
     for (const light of this.trafficLights.values()) light.step(this.tick);
 
     const ambulances = [...this.vehicles.values()].filter((v) => v.kind === "ambulance");
-    if (ambulances.length && this.config.emergency_corridor && serviceUp)
+    if (ambulances.length && this.config.emergency_corridor && serviceUp) {
       this.corridor.step(this.tick, ambulances, [...this.vehicles.values()], this.trafficLights);
+      this.transmitCorridorFrames();
+    }
+  }
+
+  /** Put the corridor's DENMs on the air and pay for them. These frames used
+   *  to be built and dropped, so the corridor appeared to cost no bandwidth. */
+  private transmitCorridorFrames() {
+    const frames = this.corridor.drainFrames();
+    if (!frames.length) return;
+    const recipients = this.recipientHandles();
+    for (const frame of frames) {
+      const origin = this.vehicles.get(frame.senderId);
+      if (!origin) continue;
+      frame.certificateAttached = this.certPolicy.attach(frame.pseudonym || frame.senderId);
+      const load = this.channelLoad(origin.node);
+      const { delivered, intended } = this.bus.broadcast(frame, origin.node, this.tick, recipients, load);
+      const bytes = messageBytes(frame);
+      this.messagesThisTick += delivered.length;
+      this.bytesThisTick += bytes;
+      this.metrics.recordBroadcast(intended, delivered.length, bytes, MESSAGE_SPECS[frame.type].designator);
+    }
   }
 
   private hazardLifecycle() {
@@ -701,6 +755,7 @@ export class SimulationEngine {
       security: {
         pseudonyms: this.authority.snapshot(this.vehicles.size),
         replay: this.replayGuard.snapshot(),
+        certificates: this.certPolicy.snapshot(),
       },
       federated: this.federation.snapshot(),
       digital_twin: this.twin.snapshot(this.tick),

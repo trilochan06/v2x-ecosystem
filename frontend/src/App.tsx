@@ -1,4 +1,5 @@
-import { NavLink, Navigate, Route, Routes } from "react-router-dom";
+import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Home } from "./pages/Home";
 import { ControlCenter } from "./pages/ControlCenter";
 import { Federated } from "./pages/Federated";
@@ -16,8 +17,13 @@ const NAV = [
 ];
 
 export default function App() {
+  const location = useLocation();
+
   return (
     <div className="app">
+      <a className="skip-link" href="#main">
+        Skip to content
+      </a>
       <header className="masthead">
         <NavLink to="/" className="brand">
           <span className="brand-mark">V2X</span>
@@ -40,16 +46,20 @@ export default function App() {
         </nav>
       </header>
 
-      <main className="page">
-        <Routes>
-          <Route path="/" element={<Home />} />
-          <Route path="/control" element={<ControlCenter />} />
-          <Route path="/federated" element={<Federated />} />
-          <Route path="/security" element={<Security />} />
-          <Route path="/experiments" element={<Experiments />} />
-          <Route path="/architecture" element={<Architecture />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
+      <main className="page" id="main">
+        {/* Keyed on the route so navigating away from a broken page clears
+            the error instead of trapping the user on the fallback. */}
+        <ErrorBoundary key={location.pathname} area="This page">
+          <Routes>
+            <Route path="/" element={<Home />} />
+            <Route path="/control" element={<ControlCenter />} />
+            <Route path="/federated" element={<Federated />} />
+            <Route path="/security" element={<Security />} />
+            <Route path="/experiments" element={<Experiments />} />
+            <Route path="/architecture" element={<Architecture />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </ErrorBoundary>
       </main>
 
       <footer className="footer">

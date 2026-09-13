@@ -50,7 +50,9 @@ def synthetic_series(length: int, seed: int) -> tuple[list[float], list[float]]:
     return series, hazard_flags
 
 
-def build_dataset(series_count: int = 40, length: int = 400, seed_offset: int = 0) -> tuple[np.ndarray, np.ndarray]:
+def build_dataset(
+    series_count: int = 40, length: int = 400, seed_offset: int = 0
+) -> tuple[np.ndarray, np.ndarray]:
     rng = random.Random(1234 + seed_offset)
     X, y = [], []
     for idx in range(series_count):

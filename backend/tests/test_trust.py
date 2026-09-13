@@ -6,7 +6,12 @@ from app.simulation.world import CityGrid
 
 def make_hazard_message(sender: str, segment_id: str, key: str = "k") -> Message:
     payload = {"segment_id": segment_id, "hazard_type": "accident", "confidence": 0.8}
-    return Message(type=MessageType.HAZARD_REPORT, sender_id=sender, payload=payload, signature=sign(payload, key))
+    return Message(
+        type=MessageType.DENM_HAZARD,
+        sender_id=sender,
+        payload=payload,
+        signature=sign(payload, key),
+    )
 
 
 def test_signature_round_trip():

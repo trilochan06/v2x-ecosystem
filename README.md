@@ -44,33 +44,78 @@ but the placement of intelligence in the network creates four practical failures
 
 ## Measured results
 
-From the built-in experiment harness (normal traffic, 400 ticks, seed 4242, with a
-scripted cloud outage in every run):
+Normal traffic, 400 ticks, **5 seeds per configuration** (4242–4246), with a
+scripted cloud outage in every run. Every figure is a mean with a 95% confidence
+interval (Student's t, not 1.96σ — at n = 5 the normal approximation is
+optimistic). "Separated" means the two intervals do not overlap.
 
-| Metric | Exp 1 — Centralized | Exp 3 — Proposed | Change |
+| Metric | Exp 1 — Centralized | Exp 3 — Proposed | Separated? |
 | --- | --- | --- | --- |
-| Cloud uplink overhead | 4.90 KB/tick | 0.32 KB/tick | **−93%** |
-| Availability during cloud outage | 0% | 100% | **+100 pts** |
-| Hazard detection F1 | 0.29 | 0.50 | **+0.21** |
-| Hazard-to-warning latency | 14.7 ticks | 8.0 ticks | −46% (3–7 samples) |
-| Mobility (segments / 100 vehicle-ticks) | 1.240 | 1.279 | +3.1% |
+| Cloud uplink overhead (KB/tick) | 2.843 ± 0.089 | **0.323 ± 0.000** | **yes — −88.6%** |
+| Availability during cloud outage | 0.0 ± 0.0 % | **100.0 ± 0.0 %** | **yes — +100 pts** |
+| Hazard detection precision | 0.885 ± 0.038 | **0.988 ± 0.019** | **yes — +0.10** |
+| Hazard detection F1 | 0.424 ± 0.212 | 0.564 ± 0.181 | no — intervals overlap |
+| Hazard-to-warning latency (ticks) | 19.8 ± 7.2 | 14.7 ± 6.0 | no — intervals overlap |
+| Mobility (segments / 100 vehicle-ticks) | 1.233 ± 0.044 | 1.273 ± 0.044 | no — intervals overlap |
 | Federated rounds completed | 0 | 24 | — |
 | Raw telemetry avoided by FL | — | 275.6 KB | — |
 
-Read these with the sample sizes in mind. Uplink overhead, availability and
-mobility aggregate over every tick and are stable across seeds. Corroborated
-alerts are rare — a few per run — so the latency figure moves substantially
-between seeds, and the site refuses to headline it below five samples rather than
-present a one-sample average as a result. Detection precision and recall depend on
-a couple of dozen hazard episodes and are similarly noisy. For anything quoted in
-the report, run several seeds and give the spread.
+**Three results hold up and three do not, and the difference matters.**
 
-**Traffic impact is the weakest result.** Mobility barely separates, and under heavy
-congestion the rerouting configurations are occasionally worse. That is a real
-finding, not an artefact: each vehicle reroutes greedily on peer reports, so a
-widely announced jam can send them all onto the same alternative — the herding
-effect congestion-responsive routing is known to produce in the field. Beating the
-baseline here needs coordinated assignment, which is scoped as future work.
+Uplink overhead, availability during outage, and detection precision separate
+cleanly and are the project's actual findings. Uplink overhead is the strongest:
+the centralized baseline streams a probe record per vehicle per tick whether or
+not anything is happening, while the decentralized configuration sends only RSU
+digests, twin sync and federated weights.
+
+F1, alert latency and mobility do **not** separate at five seeds. Earlier
+single-seed runs of this project reported a 46% latency improvement; across five
+seeds that shrinks to 25.6% with intervals that overlap almost entirely, because
+corroborated alerts are rare events — about seven per run — and the mean moves a
+long way between seeds. The honest statement is that this simulation does not
+demonstrate a latency improvement at this sample size. The site says so too: the
+Experiments page prints "intervals overlap — not separated at this sample size"
+rather than quoting the difference.
+
+**Traffic impact remains the weakest result.** Mobility differs by 3% with
+intervals that overlap, and under heavy congestion the rerouting configurations
+are occasionally worse. That is a real finding, not an artefact: each vehicle
+reroutes greedily on peer reports, so a widely announced jam can send them all
+onto the same alternative — the herding effect congestion-responsive routing is
+known to produce in the field. Beating the baseline here needs coordinated
+assignment, which is scoped as future work.
+
+## Standards
+
+The message set is not invented. Frames are the ETSI C-ITS "Day-1" services, and
+the byte sizes are what drives the bandwidth results, so they are modelled on the
+encodings rather than on `len(str(payload))`:
+
+| Frame | Standard | Role | Signed size on the air |
+| --- | --- | --- | --- |
+| **CAM** | ETSI EN 302 637-2 | Periodic awareness heartbeat | 210 B (319 B when the certificate is attached) |
+| **DENM** | ETSI EN 302 637-3 | Event-driven hazard warning | 273 B (382 B with certificate) |
+| probe | — | Raw telemetry, the cloud-only baseline | 92 B over TLS |
+
+A DENM carries a `causeCode`/`subCauseCode` from the **TS 102 894-2** Common Data
+Dictionary rather than a free-text label — `oil_spill` encodes as cause 6
+(adverseWeatherCondition-Adhesion), subcause 2 (fuelOnTheRoad). Where the
+dictionary has no matching subcause, the value degrades to 0, which the standard
+defines as "unavailable"; that is the correct encoding, not a placeholder.
+
+Two details are modelled because they change the numbers:
+
+- **Certificate attachment (IEEE 1609.2 / ETSI TS 103 097).** Putting a full
+  certificate on every frame would be ruinous at 10 Hz, so a station attaches one
+  about once a second and otherwise sends an 8-byte HashedId8 digest.
+- **Privacy is not free.** Receivers cache a certificate against the pseudonym
+  that sent it, so every pseudonym rotation forces a full re-attach. Rotating
+  faster buys unlinkability and spends bandwidth — the Security page shows the
+  running total.
+
+Not implemented: SPATEM/MAPEM, IVIM, SREM/SSEM and CPM — the Day-1.5 set. The
+traffic lights and emergency corridor here would use SPATEM and SREM/SSEM in a
+real deployment and instead act through direct calls. See `docs/ROADMAP.md`.
 
 ## Running it
 
@@ -100,11 +145,38 @@ npm run dev
 
 Open <http://localhost:5173>. The dev server proxies `/api` and `/ws` to port 8000.
 
-### Tests
+### Quality gates
+
+CI runs all of these on every push (`.github/workflows/ci.yml`), and they are the
+same commands locally:
 
 ```bash
-cd backend && source .venv/bin/activate && pytest
+# Backend: lint, types, tests with a coverage floor
+cd backend && source .venv/bin/activate
+pip install -r requirements-dev.txt
+ruff check . && mypy && pytest --cov
+
+# Frontend: lint, types, tests, production build
+cd ../frontend
+npm run lint && npm run typecheck && npm test && npm run build
 ```
+
+127 tests — 101 Python, 26 TypeScript — at 93% backend coverage. The frame-size
+constants are pinned to identical values on both sides, so if either engine
+drifts, one of the two suites fails.
+
+### Operating it
+
+The API process exposes the endpoints an orchestrator expects:
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /health` | Liveness. Cheap, true whenever the process answers. |
+| `GET /ready` | Readiness. 503 until the model has fitted and the tick loop runs. |
+| `GET /metrics` | Prometheus text exposition of the live simulation's counters. |
+
+Logs are JSON lines carrying a request id, which is echoed back in the
+`X-Request-ID` response header.
 
 ## Hosting it
 
@@ -159,19 +231,28 @@ docker build -t v2x-ecosystem . && docker run -p 8000:8000 v2x-ecosystem
 
 `render.yaml` deploys that container on Render's free tier.
 
-## A note on measuring traffic impact
+## How the measurements avoid fooling themselves
 
-`avg_trip_ticks` only counts journeys that *finish inside the run*, which
-over-samples short routes — a survivorship bias that makes the number depend on
-the window length. It is still reported, labelled as biased, but the metric to
-compare on is **segments per 100 vehicle-ticks**, where every vehicle contributes
-every tick whether or not it reaches its destination. Likewise, corroborated
-alerts are rare events, so the alert-latency figure carries its sample count and
-the site refuses to headline it below five samples.
+Three specific traps, and what is done about each.
 
-62 tests covering the radio model, corroboration and trust, federated averaging,
-pseudonym rotation and replay defence, the metrics collector, the experiment
-harness and the HTTP API.
+**Survivorship bias in trip times.** `avg_trip_ticks` only counts journeys that
+*finish inside the run*, which over-samples short routes and makes the number
+depend on the window length. It is still reported, labelled as biased, but the
+metric to compare on is **segments per 100 vehicle-ticks**, where every vehicle
+contributes every tick whether or not it reaches its destination.
+
+**One seed is not a result.** Every figure is a mean over several seeds with a
+95% interval, and every configuration sees the *same* seeds so a difference
+cannot come from one having drawn an easier run. Where intervals overlap, the
+site says they overlap instead of quoting the gap between the means.
+
+**Rare events masquerading as measurements.** Corroborated alerts happen a few
+times per run, so the alert-latency mean carries its sample count and the site
+refuses to headline it below five samples.
+
+Detection quality is scored against the *physical* hazard state, never against
+what the network believes, so a configuration that confidently confirms a
+fabricated hazard is correctly penalised for it.
 
 ## The site
 
@@ -190,20 +271,28 @@ harness and the HTTP API.
 backend/
   app/
     simulation/   world, vehicles, RSUs, fog nodes, traffic lights, digital twin, engine
-    network/      messages, gossip radio, corroboration, trust, pseudonyms, RSU topology
+    network/      ETSI C-ITS messages, gossip radio, corroboration, trust, pseudonyms
     ai/           feature engineering, synthetic corpus, centralized model, federated learning
     decisions/    relevance filtering and alert dispatch
     emergency/    predictive emergency corridors
     experiments/  the Exp1/Exp2/Exp3 harness
     api/          REST + WebSocket
-  tests/
+    stats.py      confidence intervals for the harness
+    observability.py  health, readiness, Prometheus metrics, JSON logs
+  tests/          101 tests
+  pyproject.toml  ruff, mypy, pytest and coverage configuration
 frontend/
   src/pages/      the six pages
-  src/components/ map, panels, charts
+  src/components/ map, panels, charts, error boundary
+  src/sim/        the TypeScript port of the engine — what the hosted site runs
+  src/sim/sim.test.ts  26 tests, incl. frame sizes pinned to the Python side
 docs/
   ARCHITECTURE.md  design decisions and honest trade-offs
   EXPERIMENTS.md   methodology, metric definitions, how to reproduce
   ROADMAP.md       what a real deployment would still need
+.github/workflows/ci.yml   lint, types, tests and builds for both halves
+CONTRIBUTING.md   the gates, and the two-engine rule
+SECURITY.md       what the modelled security is and is not
 ```
 
 ## Scope, stated honestly

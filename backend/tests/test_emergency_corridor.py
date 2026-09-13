@@ -15,7 +15,9 @@ def test_corridor_preempts_lights_and_issues_yield_instructions():
     lights = {"1-0": TrafficLight(id="light-1-0", node="1-0")}
 
     mgr = EmergencyCorridorManager(grid=grid)
-    instructions = mgr.step(tick=1, ambulances=[ambulance], all_vehicles=[ambulance, blocker], traffic_lights=lights)
+    instructions = mgr.step(
+        tick=1, ambulances=[ambulance], all_vehicles=[ambulance, blocker], traffic_lights=lights
+    )
 
     assert lights["1-0"].preempted_until >= 1
     assert any(i["vehicle_id"] == "car-1" for i in instructions)

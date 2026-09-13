@@ -28,7 +28,7 @@ weights versus what shipping the raw samples would have cost.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -53,10 +53,10 @@ class ModelWeights:
     b: float
 
     @staticmethod
-    def zeros() -> "ModelWeights":
+    def zeros() -> ModelWeights:
         return ModelWeights(w=np.zeros(FEATURE_DIM), b=0.0)
 
-    def copy(self) -> "ModelWeights":
+    def copy(self) -> ModelWeights:
         return ModelWeights(w=self.w.copy(), b=float(self.b))
 
     def predict(self, X: np.ndarray) -> np.ndarray:
@@ -67,7 +67,7 @@ class ModelWeights:
         """What one client actually uploads per round."""
         return (FEATURE_DIM + 1) * FLOAT_BYTES
 
-    def distance_to(self, other: "ModelWeights") -> float:
+    def distance_to(self, other: ModelWeights) -> float:
         return float(np.linalg.norm(self.w - other.w) + abs(self.b - other.b))
 
 

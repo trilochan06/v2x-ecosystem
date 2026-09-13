@@ -4,18 +4,25 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import router as api_router
 from app.api.ws import router as ws_router
-from app.runtime import start_tick_loop, stop_tick_loop
+from app.observability import (
+    PROMETHEUS_CONTENT_TYPE,
+    configure_logging,
+    install_request_id_middleware,
+    render_prometheus,
+)
+from app.runtime import get_engine, is_ready, manager, start_tick_loop, stop_tick_loop
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(_app: FastAPI):
+    configure_logging()
     start_tick_loop()
     yield
     stop_tick_loop()
@@ -33,8 +40,35 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+install_request_id_middleware(app)
+
 app.include_router(api_router)
 app.include_router(ws_router)
+
+
+# --------------------------------------------------------------------------
+# Operational endpoints. Registered before the SPA catch-all below, which
+# would otherwise swallow them.
+# --------------------------------------------------------------------------
+@app.get("/health", tags=["ops"])
+def health() -> dict:
+    """Liveness. True whenever the process can answer at all."""
+    return {"status": "ok"}
+
+
+@app.get("/ready", tags=["ops"])
+def ready() -> Response:
+    """Readiness. 503 until the model has fitted and the loop is ticking."""
+    if not is_ready():
+        return JSONResponse({"status": "starting"}, status_code=503)
+    return JSONResponse({"status": "ready", "tick": get_engine().tick})
+
+
+@app.get("/metrics", tags=["ops"])
+def metrics() -> Response:
+    """Prometheus text exposition of the live simulation's counters."""
+    body = render_prometheus(get_engine().state_snapshot(), websocket_clients=len(manager.active))
+    return Response(content=body, media_type=PROMETHEUS_CONTENT_TYPE)
 
 
 # --------------------------------------------------------------------------

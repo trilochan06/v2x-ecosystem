@@ -29,6 +29,13 @@ def get_engine() -> SimulationEngine:
     return _engine
 
 
+def is_ready() -> bool:
+    """Ready means: the model has fitted, an engine exists, and the tick loop
+    is running. Until all three hold, this instance would serve an empty
+    simulation and should not be sent traffic."""
+    return _engine is not None and _tick_task is not None and not _tick_task.done()
+
+
 def rebuild_engine(config: ArchitectureConfig) -> SimulationEngine:
     """Swap the live architecture. The model is shared and already fitted,
     so this is fast enough to do from a button click."""

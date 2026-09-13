@@ -10,7 +10,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from app.network.messages import Message, MessageType
+from app.network.messages import (
+    PATH_POINT_BYTES,
+    CauseCode,
+    Message,
+    MessageType,
+)
+from app.network.security import sign
 from app.simulation.traffic_light import TrafficLight
 from app.simulation.vehicle import Vehicle
 from app.simulation.world import CityGrid
@@ -24,22 +30,40 @@ class EmergencyCorridorManager:
     grid: CityGrid
     active_corridors: dict[str, dict] = field(default_factory=dict)
     events: list[dict] = field(default_factory=list)
+    #: Frames raised this tick, drained by the engine so they are transmitted
+    #: and paid for like any other broadcast.
+    pending_frames: list[Message] = field(default_factory=list)
 
     def activate(self, ambulance: Vehicle, tick: int) -> Message:
         self.active_corridors[ambulance.id] = {"activated_tick": tick}
         self.events.append({"tick": tick, "type": "corridor_activated", "ambulance_id": ambulance.id})
+        route = ambulance.route[:LOOKAHEAD_NODES]
         payload = {
             "ambulance_id": ambulance.id,
-            "route": ambulance.route[:LOOKAHEAD_NODES],
+            "cause_code": int(CauseCode.EMERGENCY_VEHICLE_APPROACHING),
+            "sub_cause_code": 0,
+            "route": route,
             "eta_seconds": self._eta_table(ambulance),
         }
-        return Message(
-            type=MessageType.EMERGENCY_BROADCAST,
+        frame = Message(
+            type=MessageType.DENM_EVA,
             sender_id=ambulance.id,
+            pseudonym=ambulance.pseudonym,
             payload=payload,
             ttl=self.grid.size * 2,
             created_tick=tick,
+            signature=sign(payload, ambulance.signing_key),
+            # The predicted path and its ETA table are what make this frame
+            # bigger than a plain hazard DENM.
+            variable_bytes=len(route) * PATH_POINT_BYTES,
         )
+        self.pending_frames.append(frame)
+        return frame
+
+    def drain_frames(self) -> list[Message]:
+        """Hand the engine everything raised since the last drain."""
+        frames, self.pending_frames = self.pending_frames, []
+        return frames
 
     def _eta_table(self, ambulance: Vehicle) -> dict[str, float]:
         eta = {}
@@ -85,7 +109,7 @@ class EmergencyCorridorManager:
                 if v.kind == "ambulance":
                     continue
                 if v.current_segment_id in corridor_segment_ids:
-                    eta = eta_table.get(v.next_node, 0.0)
+                    eta = eta_table.get(v.next_node or "", 0.0)
                     instruction = {
                         "ambulance_id": ambulance.id,
                         "eta_seconds": eta,

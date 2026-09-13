@@ -77,7 +77,11 @@ class FogNode:
         }
 
 
-def build_fog_clusters(rsu_ids: list[str], rsu_coords: dict[str, tuple[float, float]], cluster_size: int = 3) -> list[FogNode]:
+def build_fog_clusters(
+    rsu_ids: list[str],
+    rsu_coords: dict[str, tuple[float, float]],
+    cluster_size: int = 3,
+) -> list[FogNode]:
     """Group RSUs into geographically coherent fog clusters of roughly
     `cluster_size`. Sorting by (x, y) before chunking keeps each cluster a
     contiguous district (e.g. the west side, then the east side) instead of
@@ -85,7 +89,7 @@ def build_fog_clusters(rsu_ids: list[str], rsu_coords: dict[str, tuple[float, fl
     sides of the city.
     """
     ordered = sorted(rsu_ids, key=lambda r: (rsu_coords[r][0], rsu_coords[r][1]))
-    nodes = []
+    nodes: list[FogNode] = []
     for i in range(0, len(ordered), cluster_size):
         chunk = ordered[i : i + cluster_size]
         if not chunk:

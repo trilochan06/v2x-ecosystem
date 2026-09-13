@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { CERTIFICATE_BYTES, CERTIFICATE_DIGEST_BYTES } from "../sim/core";
 import { commands, useSimulation } from "../sim/runtime";
 
 export function Security() {
@@ -10,7 +11,7 @@ export function Security() {
     return <div className="loading">Connecting to the simulation engine…</div>;
   }
 
-  const { pseudonyms, replay } = state.security;
+  const { pseudonyms, replay, certificates } = state.security;
   const trustRows = Object.entries(state.trust)
     .filter(([, t]) => t.reports_seen > 0)
     .sort((a, b) => a[1].trust_score - b[1].trust_score)
@@ -45,6 +46,31 @@ export function Security() {
         <Stat label="Stale dropped" value={replay.stale_dropped} />
         <Stat label="Frames accepted" value={replay.accepted} />
       </div>
+
+      <section className="panel wide">
+        <h2>Certificate attachment (IEEE 1609.2 / ETSI TS 103 097)</h2>
+        <p className="muted">
+          Signing every frame with a full certificate would be ruinous at 10 Hz, so a station
+          attaches its certificate roughly once a second and otherwise sends an 8-byte HashedId8
+          digest, trusting receivers to have cached it. That is a {CERTIFICATE_BYTES}-byte
+          credential replaced by {CERTIFICATE_DIGEST_BYTES} bytes on {certificates.digests_attached}{" "}
+          of {certificates.frames_secured} secured frames so far.
+        </p>
+        <div className="stat-grid">
+          <Stat label="Frames secured" value={certificates.frames_secured} />
+          <Stat label="Full certificates" value={certificates.certificates_attached} />
+          <Stat label="Digests instead" value={certificates.digests_attached} />
+          <Stat label="Saved by digests" value={`${certificates.kilobytes_saved} KB`} />
+        </div>
+        <p className="muted small">
+          Privacy is not free here. Receivers cache a certificate against the pseudonym that sent
+          it, so every rotation throws that cache away and the next frame must carry the full
+          certificate again. Rotating faster buys unlinkability and spends bandwidth.
+          {pseudonyms.rotations > 0
+            ? ` ${pseudonyms.rotations} rotation${pseudonyms.rotations === 1 ? " has" : "s have"} forced a re-attach so far.`
+            : " No vehicle has rotated yet in this run."}
+        </p>
+      </section>
 
       <div className="two-col">
         <section className="panel">

@@ -1,0 +1,7 @@
+-r requirements.txt
+
+# Quality gates. Versions are pinned so CI and a developer's laptop agree on
+# what counts as a failure.
+ruff==0.16.7
+mypy==1.13.0
+pytest-cov==5.0.0

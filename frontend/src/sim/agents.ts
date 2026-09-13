@@ -3,7 +3,17 @@
  *  emergency corridors (M10). Ported from `backend/app/simulation/`. */
 import { CongestionPredictor, FederatedClient, PREDICTION_HORIZON_TICKS } from "./ai";
 import type { PredictionResult } from "./ai";
-import { CityGrid, HAZARD_TYPES, Message, Rng, Segment, makeMessage } from "./core";
+import {
+  CAUSE_CODE,
+  CityGrid,
+  HAZARD_TYPES,
+  Message,
+  PATH_POINT_BYTES,
+  Rng,
+  Segment,
+  causeFor,
+  makeMessage,
+} from "./core";
 
 // ----------------------------------------------------------- vehicle
 export type VehicleKind = "car" | "ambulance" | "malicious";
@@ -134,11 +144,20 @@ export class Vehicle {
   }
 
   private hazardMessage(seg: Segment, hazardType: string, confidence: number, tick: number) {
+    // A DENM identifies what it saw with a CauseCode/SubCauseCode from the
+    // TS 102 894-2 dictionary, not a free-text label.
+    const [causeCode, subCauseCode] = causeFor(hazardType);
     return makeMessage({
-      type: "hazard_report",
+      type: "denm-hazard",
       senderId: this.id,
       pseudonym: this.pseudonym,
-      payload: { segment_id: seg.id, hazard_type: hazardType, confidence },
+      payload: {
+        segment_id: seg.id,
+        hazard_type: hazardType,
+        cause_code: causeCode,
+        sub_cause_code: subCauseCode,
+        confidence,
+      },
       ttl: 3,
       createdTick: tick,
       signed: true,
@@ -148,7 +167,7 @@ export class Vehicle {
   private maybeShareOccupancy(seg: Segment, tick: number): Message | null {
     if (tick % OCCUPANCY_PING_INTERVAL_TICKS !== 0) return null;
     return makeMessage({
-      type: "occupancy_ping",
+      type: "cam",
       senderId: this.id,
       pseudonym: this.pseudonym,
       payload: { segment_id: seg.id, occupancy: Math.round(seg.occupancy * 1000) / 1000 },
@@ -587,8 +606,18 @@ const PREEMPT_HOLD_TICKS = 8;
 
 export class EmergencyCorridorManager {
   activeCorridors = new Set<string>();
+  /** Frames raised this tick, drained by the engine so they are transmitted
+   *  and paid for like any other broadcast. */
+  pendingFrames: Message[] = [];
 
   constructor(private grid: CityGrid) {}
+
+  /** Hand the engine everything raised since the last drain. */
+  drainFrames(): Message[] {
+    const frames = this.pendingFrames;
+    this.pendingFrames = [];
+    return frames;
+  }
 
   step(tick: number, ambulances: Vehicle[], allVehicles: Vehicle[], lights: Map<string, TrafficLight>) {
     const activeIds = new Set(ambulances.map((a) => a.id));
@@ -596,8 +625,29 @@ export class EmergencyCorridorManager {
 
     const corridorSegments = new Set<string>();
     for (const amb of ambulances) {
+      const isNewCorridor = !this.activeCorridors.has(amb.id);
       this.activeCorridors.add(amb.id);
       const route = amb.route.slice(0, LOOKAHEAD_NODES);
+      if (isNewCorridor) {
+        this.pendingFrames.push(
+          makeMessage({
+            type: "denm-eva",
+            senderId: amb.id,
+            pseudonym: amb.pseudonym,
+            payload: {
+              ambulance_id: amb.id,
+              cause_code: CAUSE_CODE.EMERGENCY_VEHICLE_APPROACHING,
+              sub_cause_code: 0,
+            },
+            ttl: this.grid.size * 2,
+            createdTick: tick,
+            signed: true,
+            // The predicted path and its ETA table are what make this frame
+            // bigger than a plain hazard DENM.
+            variableBytes: route.length * PATH_POINT_BYTES,
+          }),
+        );
+      }
       const eta = new Map<string, number>();
       let cumulative = 0;
       for (let i = 0; i < route.length - 1; i++) {

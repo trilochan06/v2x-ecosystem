@@ -124,6 +124,9 @@ export interface MetricsSummary {
     local_kilobytes_per_tick: number;
     uplink_kilobytes: number;
     uplink_kilobytes_per_tick: number;
+    /** Frames and bytes by standard designator: CAM, DENM, probe. */
+    frames_by_designator: Record<string, number>;
+    kilobytes_by_designator: Record<string, number>;
   };
   traffic: {
     segments_per_100_vehicle_ticks: number;
@@ -187,6 +190,14 @@ export interface SimulationState {
       rejection_rate_pct: number;
       freshness_window_ticks: number;
     };
+    /** IEEE 1609.2 / TS 103 097 certificate attachment. */
+    certificates: {
+      frames_secured: number;
+      certificates_attached: number;
+      digests_attached: number;
+      attach_interval: number;
+      kilobytes_saved: number;
+    };
   };
   federated: FederatedState;
   digital_twin: {
@@ -235,19 +246,44 @@ export interface ExperimentRun {
   outage_window: { start: number; end: number };
 }
 
+/** A mean with the uncertainty that belongs to it. Mirrors app/stats.py. */
+export interface Estimate {
+  mean: number;
+  half_width: number;
+  low: number;
+  high: number;
+  stdev: number;
+  n: number;
+  /** One seed is a sample, not a result. */
+  reportable: boolean;
+}
+
 export interface HeadlineMetric {
   baseline: number;
+  baseline_half_width: number;
   proposed: number;
+  proposed_half_width: number;
   improvement_pct: number;
+  samples: number;
+  /** Whether the two 95% intervals actually separate. */
+  separated: boolean;
   unit: string;
   label: string;
+}
+
+export interface ConfigAggregate {
+  config_key: string;
+  metrics: Record<string, Estimate>;
 }
 
 export interface ExperimentSuite {
   scenario: ExperimentRun["scenario"];
   ticks: number;
   seed: number;
+  seeds: number[];
+  repeats: number;
   runs: ExperimentRun[];
+  aggregates: ConfigAggregate[];
   headline: Record<string, HeadlineMetric>;
 }
 
