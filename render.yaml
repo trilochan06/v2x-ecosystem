@@ -1,0 +1,16 @@
+# Render blueprint. Point Render at this repo and it picks this up
+# automatically (Dashboard -> New -> Blueprint).
+#
+# Render is a good fit because the free tier runs a persistent container and
+# supports WebSockets, which the live simulation needs. Note that free
+# instances sleep after ~15 minutes of inactivity and the simulation restarts
+# from tick 0 when they wake -- fine for a demo, but start it warming a minute
+# before a live presentation.
+services:
+  - type: web
+    name: v2x-ecosystem
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /api/health
+    autoDeploy: true

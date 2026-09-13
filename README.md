@@ -96,6 +96,46 @@ Open <http://localhost:5173>. The dev server proxies `/api` and `/ws` to port 80
 cd backend && source .venv/bin/activate && pytest
 ```
 
+## Hosting it
+
+The simulation is a **long-lived ticking loop with a WebSocket attached**, so it
+needs a persistent server process. It will *not* work on serverless function
+hosting (Vercel/Netlify functions, Lambda) — those spin up per request and cannot
+hold simulation state or an open socket. Pick a host that runs a container.
+
+In production the API process also serves the built frontend, so the whole thing is
+one service on one port and the UI is same-origin (no CORS, no build-time API URL).
+
+### Render (recommended — free tier, no card)
+
+1. Push this repo to GitHub.
+2. Render Dashboard → **New → Blueprint** → select the repo.
+3. It reads `render.yaml` and builds the Dockerfile. Done.
+
+Free instances sleep after ~15 minutes idle and restart the simulation from tick 0
+on wake, so open the URL a minute before a live demo to let it warm up.
+
+### Any Docker host (Railway, Fly.io, a VPS)
+
+```bash
+docker build -t v2x-ecosystem .
+docker run -p 8000:8000 v2x-ecosystem
+```
+
+Then open <http://localhost:8000>. The image builds the frontend and serves
+everything from one process; hosts that inject a `PORT` env var are handled.
+
+### Running the production build locally
+
+```bash
+cd frontend && npm run build
+cd ../backend && source .venv/bin/activate
+uvicorn app.main:app --port 8000
+```
+
+<http://localhost:8000> now serves the built site and the live API together —
+identical to what gets deployed.
+
 62 tests covering the radio model, corroboration and trust, federated averaging,
 pseudonym rotation and replay defence, the metrics collector, the experiment
 harness and the HTTP API.
