@@ -44,23 +44,33 @@ but the placement of intelligence in the network creates four practical failures
 
 ## Measured results
 
-From the built-in experiment harness (normal traffic, 250 ticks, seed 4242, with a
+From the built-in experiment harness (normal traffic, 400 ticks, seed 4242, with a
 scripted cloud outage in every run):
 
 | Metric | Exp 1 — Centralized | Exp 3 — Proposed | Change |
 | --- | --- | --- | --- |
-| Hazard-to-warning latency | 28.75 ticks | 1.75 ticks | **−94%** |
-| Cloud uplink overhead | 5.05 KB/tick | 0.32 KB/tick | **−94%** |
+| Cloud uplink overhead | 4.90 KB/tick | 0.32 KB/tick | **−93%** |
 | Availability during cloud outage | 0% | 100% | **+100 pts** |
-| Federated rounds completed | 0 | 14 | — |
-| Raw telemetry avoided by FL | — | 160.8 KB | — |
+| Hazard detection F1 | 0.29 | 0.50 | **+0.21** |
+| Hazard-to-warning latency | 14.7 ticks | 8.0 ticks | −46% (3–7 samples) |
+| Mobility (segments / 100 vehicle-ticks) | 1.240 | 1.279 | +3.1% |
+| Federated rounds completed | 0 | 24 | — |
+| Raw telemetry avoided by FL | — | 275.6 KB | — |
 
-**Average trip time does not separate meaningfully**, and under heavy congestion the
-rerouting configurations are occasionally marginally worse. That is a real finding,
-not a measurement artefact: each vehicle reroutes greedily on peer reports, so a
+Read these with the sample sizes in mind. Uplink overhead, availability and
+mobility aggregate over every tick and are stable across seeds. Corroborated
+alerts are rare — a few per run — so the latency figure moves substantially
+between seeds, and the site refuses to headline it below five samples rather than
+present a one-sample average as a result. Detection precision and recall depend on
+a couple of dozen hazard episodes and are similarly noisy. For anything quoted in
+the report, run several seeds and give the spread.
+
+**Traffic impact is the weakest result.** Mobility barely separates, and under heavy
+congestion the rerouting configurations are occasionally worse. That is a real
+finding, not an artefact: each vehicle reroutes greedily on peer reports, so a
 widely announced jam can send them all onto the same alternative — the herding
-effect congestion-responsive routing is known to produce in the field. Numbers vary
-by seed; run several and report the spread.
+effect congestion-responsive routing is known to produce in the field. Beating the
+baseline here needs coordinated assignment, which is scoped as future work.
 
 ## Running it
 
@@ -148,36 +158,6 @@ compare on is **segments per 100 vehicle-ticks**, where every vehicle contribute
 every tick whether or not it reaches its destination. Likewise, corroborated
 alerts are rare events, so the alert-latency figure carries its sample count and
 the site refuses to headline it below five samples.
-
-### Render (recommended — free tier, no card)
-
-1. Push this repo to GitHub.
-2. Render Dashboard → **New → Blueprint** → select the repo.
-3. It reads `render.yaml` and builds the Dockerfile. Done.
-
-Free instances sleep after ~15 minutes idle and restart the simulation from tick 0
-on wake, so open the URL a minute before a live demo to let it warm up.
-
-### Any Docker host (Railway, Fly.io, a VPS)
-
-```bash
-docker build -t v2x-ecosystem .
-docker run -p 8000:8000 v2x-ecosystem
-```
-
-Then open <http://localhost:8000>. The image builds the frontend and serves
-everything from one process; hosts that inject a `PORT` env var are handled.
-
-### Running the production build locally
-
-```bash
-cd frontend && npm run build
-cd ../backend && source .venv/bin/activate
-uvicorn app.main:app --port 8000
-```
-
-<http://localhost:8000> now serves the built site and the live API together —
-identical to what gets deployed.
 
 62 tests covering the radio model, corroboration and trust, federated averaging,
 pseudonym rotation and replay defence, the metrics collector, the experiment
