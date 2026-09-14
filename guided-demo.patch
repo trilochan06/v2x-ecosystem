@@ -1,0 +1,2072 @@
+From 2a30f63a34c4b78e4a40e71bc7a3cb016f7ba5e1 Mon Sep 17 00:00:00 2001
+From: Trilochan <trilohere@gmail.com>
+Date: Mon, 14 Sep 2026 13:18:58 +0000
+Subject: [PATCH] Add a guided demo: real collisions and seven stories the
+ system tells itself
+
+The control centre answers "how well does this perform" and the street view
+is a sandbox to poke at. Neither answers the question an audience actually
+has, which is "what is this thing doing and why should I care". That needs a
+story with a beginning and an end.
+
+New page at /demo. Pick one of seven stories and it stages that event in the
+live simulation: a crash and everything that follows, a pedestrian seen
+around a corner, arriving on green, a liar being found out, a cloud outage,
+the roadside units learning together, or all of it at once.
+
+Down the side is a numbered checklist of what the story claims will happen.
+Each line latches, with the tick it happened on, only when the running
+simulation genuinely does it. Nothing is animated: a step the system does
+not produce stays dark. That constraint is the whole design -- a scripted
+animation that always succeeds would prove nothing.
+
+Collisions are now modelled rather than approximated by dropping an
+obstruction. Two vehicles on the same road are wrecked, go immobile, block
+the lane and keep announcing the accident on a duty cycle (DENM causeCode 2,
+confidence 1.0 -- the sender is the accident). One event then chains four
+modules: the traffic behind is warned before it can see anything, peers
+corroborate the report into a confirmed incident, an ambulance is dispatched,
+and the corridor asks junctions for priority. Where no road has two vehicles
+on it the second is brought in, and the result says `staged: true` rather
+than pretending traffic did it.
+
+Several things were measured rather than assumed, and the measurements
+changed the design:
+
+Declared story lengths were guesses and all of them were wrong -- the crash
+cascade completes in 3 ticks, not the 55 I had written. Progress is now shown
+against beats completed rather than ticks elapsed, because a tick bar sitting
+at 5% on a story that has already finished says the opposite of the truth.
+The clock also stops when a story ends, since otherwise the scene the
+checklist describes has scrolled away before anyone can look at it.
+
+Certificate revocation genuinely needs 200-320 ticks of evidence. Rather than
+lower the threshold to make the demo snappier, the story was given the time
+it needs, split so the intermediate trust collapse is visible, and annotated
+to say the slowness is deliberate: wrongly revoking an honest vehicle is
+worse than tolerating a liar for a while.
+
+Two real defects surfaced. Ambulances were dispatched from a random node, so
+roughly one time in sixteen they spawned on the incident with a route of one
+node -- no journey, no corridor, nothing to watch; and an origin whose only
+signalised junction was under its own wheels asked for no priority at all,
+because priority is requested for junctions ahead. Dispatch now prefers a
+station whose route passes a signal it has not yet reached. Separately a
+wrecked vehicle returned early from its tick, so it announced the accident
+but never shared the pedestrian standing in front of it, starving collective
+perception on the one road where a stopped car is the only thing with a view.
+
+Steps that legitimately do not fire every run are labelled as such. Signal
+priority lands in about four runs in six -- it depends on where the junctions
+fall along the route and the ask can be lost -- and a dark line should read
+as an honest lossy radio, not a broken demo.
+
+Also: the narration collapsed. On a nine-RSU grid every junction broadcasts
+on the same duty cycle, so SPaT was seven lines out of seven and drowned out
+everything worth reading; it is now one line per tick.
+
+176 Python tests and 59 TypeScript tests pass; ruff, mypy, tsc and eslint are
+clean. Beat coverage was checked headlessly across six seeds before any of it
+was wired to a page, and the whole thing was driven in a browser afterwards:
+all seven stories offered, the crash story completing 7/7, the standards
+detail toggling, no failing requests on any route, and no horizontal overflow
+at 400px.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_015QcrBzKq96ThW15hftpimA
+---
+ README.md                               |  32 +-
+ backend/app/simulation/engine.py        |  96 ++++++
+ backend/app/simulation/vehicle.py       |  76 +++++
+ backend/tests/test_porsche_use_cases.py |  94 ++++++
+ frontend/src/App.tsx                    |   3 +
+ frontend/src/components/Narration.tsx   |  25 ++
+ frontend/src/components/StreetMap.tsx   |  13 +-
+ frontend/src/pages/GuidedDemo.tsx       | 301 ++++++++++++++++++
+ frontend/src/sim/agents.ts              |  69 +++++
+ frontend/src/sim/engine.ts              | 101 ++++++
+ frontend/src/sim/guidedRuntime.ts       | 236 ++++++++++++++
+ frontend/src/sim/porsche.test.ts        |  93 ++++++
+ frontend/src/sim/scenarios.ts           | 389 ++++++++++++++++++++++++
+ frontend/src/styles.css                 | 156 ++++++++++
+ frontend/src/types.ts                   |  11 +
+ 15 files changed, 1688 insertions(+), 7 deletions(-)
+ create mode 100644 frontend/src/pages/GuidedDemo.tsx
+ create mode 100644 frontend/src/sim/guidedRuntime.ts
+ create mode 100644 frontend/src/sim/scenarios.ts
+
+diff --git a/README.md b/README.md
+index 86ea47b..6118700 100644
+--- a/README.md
++++ b/README.md
+@@ -23,10 +23,32 @@ inference at the edge, the regional model is trained by federated averaging
+ without any raw telemetry leaving the roadside, a digital twin mirrors the city,
+ and the whole thing keeps working when the cloud uplink is cut.
+ 
+-The website is the product: a live control centre over the running simulation, a
+-federated-learning monitor, a security console, and an experiment harness that
+-runs the three architectures from the project design head-to-head and reports the
+-measured differences.
++The website is the product: a guided demo that tells the system's stories one at
++a time, a live control centre over the running simulation, a federated-learning
++monitor, a security console, and an experiment harness that runs the three
++architectures from the project design head-to-head and reports the measured
++differences.
++
++### Start here: the guided demo
++
++`/demo` is the page to open first, and the one to show someone who has never
++heard of V2X. Pick one of seven stories — a crash and the response it triggers,
++a pedestrian seen around a corner, arriving on green, a liar being found out, a
++cloud outage, the roadside units learning together, or all of it at once — and
++it stages that event in the live simulation.
++
++Down the side is a numbered checklist of what the story claims will happen. Each
++line ticks off, with the tick it happened on, **only when the running simulation
++actually does it**. Nothing is animated or scripted: a step that the system does
++not produce stays dark. Steps that genuinely do not fire every run — priority at
++a junction depends on where the signals fall along the route, and the ask can be
++lost on the air — are labelled as such, so a dark line reads as an honest lossy
++radio rather than a broken demo.
++
++The clock stops when a story reaches its end, because these cascades are fast: a
++collision is corroborated, alerted on and responded to within about three ticks,
++which is the point being made and also far too quick to read if the scene keeps
++moving.
+ 
+ ### The problem it addresses
+ 
+@@ -123,7 +145,7 @@ would describe nothing a viewer cannot already see.
+ ### Three connected-driving applications
+ 
+ Each is a standard frame doing something a driver would notice, and each is
+-reachable from the **Street view** page in one click:
++reachable from the **Guided demo** and **Street view** pages in one click:
+ 
+ - **Emergency brake warning.** A car brakes hard for someone stepping out and
+   emits a DENM with `causeCode` 99 / `subCauseCode` 1
+diff --git a/backend/app/simulation/engine.py b/backend/app/simulation/engine.py
+index 3bd6142..9e9468e 100644
+--- a/backend/app/simulation/engine.py
++++ b/backend/app/simulation/engine.py
+@@ -56,6 +56,9 @@ SIGNAL_REQUEST_TTL_HOPS = 2
+ TRANSMISSION_LOG_LIMIT = 60
+ #: How long a pedestrian stays on the crossing.
+ PEDESTRIAN_CROSSING_TICKS = 10
++#: How long a wreck keeps the road hazardous. Longer than the vehicles stay
++#: immobile, because debris outlives the recovery truck.
++CRASH_HAZARD_TTL_TICKS = 30
+ 
+ 
+ @dataclass
+@@ -110,6 +113,8 @@ class SimulationEngine:
+         #: Counts for the collective-perception story: how often a vehicle
+         #: acted on a pedestrian it could not itself see.
+         self.perception_stats = {"shared": 0, "warned_blind": 0, "brake_warnings": 0}
++        #: Recent collisions, newest last, so the UI can narrate them.
++        self.collisions: list[dict] = []
+         self.event_log: list[dict] = []
+ 
+         self.cloud_online = True
+@@ -183,6 +188,96 @@ class SimulationEngine:
+             self._log("malicious_spawned", f"Attacker {vid} joined and is injecting false hazards.")
+         return v
+ 
++    def trigger_collision(self, segment_id: str | None = None) -> dict | None:
++        """Stage a real collision between two vehicles.
++
++        This is the most watchable thing the system does, because one event
++        chains four modules together: both wrecks broadcast, the traffic
++        behind is warned before it can see anything, peers corroborate the
++        report into a confirmed incident, and the emergency response opens a
++        corridor through it.
++
++        Prefers a road that genuinely has two vehicles on it. Only if no such
++        road exists does it place a second vehicle there, which is a demo
++        affordance rather than something traffic does -- the event log says
++        which of the two happened.
++        """
++        eligible: dict[str, list[Vehicle]] = {}
++        for vehicle in self.vehicles.values():
++            seg_id = vehicle.current_segment_id
++            if seg_id is None or vehicle.crashed or vehicle.kind == "ambulance":
++                continue
++            if segment_id is not None and seg_id != segment_id:
++                continue
++            eligible.setdefault(seg_id, []).append(vehicle)
++
++        pairs = {sid: vs for sid, vs in eligible.items() if len(vs) >= 2}
++        staged = False
++        if pairs:
++            crash_segment = self.rng.choice(sorted(pairs))
++            first, second = pairs[crash_segment][:2]
++        elif eligible:
++            # Nobody is sharing a road. Bring a second vehicle onto one.
++            crash_segment = self.rng.choice(sorted(eligible))
++            first = eligible[crash_segment][0]
++            second = self.spawn_vehicle("car")
++            second.node = first.node
++            second.route = list(first.route)
++            second.progress = max(0.0, first.progress - 0.08)
++            staged = True
++        else:
++            return None
++
++        seg = self.grid.segments[crash_segment]
++        first.crash(self.tick)
++        second.crash(self.tick)
++        seg.raise_hazard("accident", CRASH_HAZARD_TTL_TICKS, self.tick)
++        self.metrics.hazard_raised(seg.id, "accident", self.tick)
++        self.collisions.append(
++            {"tick": self.tick, "segment_id": seg.id, "vehicles": [first.id, second.id]}
++        )
++        del self.collisions[:-10]
++
++        how = "a second vehicle was brought onto the road" if staged else "two vehicles already there"
++        self._log("collision", f"Collision on {seg.id} between {first.id} and {second.id} ({how}).")
++        return {"segment_id": seg.id, "vehicles": [first.id, second.id], "staged": staged}
++
++    def dispatch_ambulance_to(self, node: str) -> Vehicle:
++        """Send an ambulance towards a specific junction.
++
++        `spawn_vehicle` gives an ambulance a random errand, which is fine for
++        background traffic and useless for showing a response to an incident
++        that just happened somewhere specific.
++        """
++        ambulance = self.spawn_vehicle("ambulance")
++        # Start it far enough away to actually be seen responding. Spawning at
++        # a random node put it *on* the incident about one time in sixteen,
++        # giving a route of one node: no journey, no corridor, no priority
++        # request, and nothing for a viewer to watch.
++        distances = sorted(
++            (n for n in self.grid.nodes if n != node),
++            key=lambda n: -self.grid.euclidean(n, node),
++        )
++        far = distances[: max(1, len(distances) // 4)]
++        # Prefer a station whose route passes a signalised junction it has not
++        # already reached. Priority is requested for junctions *ahead*, so an
++        # origin whose only light is the one under its own wheels asks for
++        # nothing -- which looked like a lost request and was really a bad
++        # dispatch. Choosing where to send from is a dispatcher's decision; it
++        # does not touch whether the request is heard or granted.
++        via_signal = [
++            origin
++            for origin in far
++            if any(hop in self.traffic_lights for hop in self.grid.shortest_path(origin, node)[1:])
++        ]
++        ambulance.node = self.rng.choice(via_signal or far)
++        ambulance.destination = node
++        ambulance.route = self.grid.shortest_path(ambulance.node, node)
++        ambulance.progress = 0.0
++        ambulance.trip_started_tick = self.tick
++        self._log("ambulance_dispatch", f"{ambulance.id} responding to {node}.")
++        return ambulance
++
+     def despawn_vehicle(self) -> str | None:
+         """Take a car off the road.
+ 
+@@ -892,6 +987,7 @@ class SimulationEngine:
+                 )
+                 for ped in self.pedestrians.values()
+             ],
++            "collisions": list(self.collisions),
+             "perception": {
+                 **self.perception_stats,
+                 "glosa_active": sum(
+diff --git a/backend/app/simulation/vehicle.py b/backend/app/simulation/vehicle.py
+index e8fa431..d0f2a8c 100644
+--- a/backend/app/simulation/vehicle.py
++++ b/backend/app/simulation/vehicle.py
+@@ -65,6 +65,15 @@ PEDESTRIAN_CAUTION_FACTOR = 0.45
+ # holding a speed to catch the green is worth advising.
+ GLOSA_APPROACH_PROGRESS = 0.35
+ 
++# How long a wreck sits in the carriageway before it is cleared and the
++# vehicles rejoin traffic.
++CRASH_IMMOBILE_TICKS = 22
++# A wrecked vehicle re-announces itself on this duty cycle. Every tick would
++# be both unrealistic and a denial of service on its own neighbours.
++CRASH_REPORT_INTERVAL_TICKS = 3
++# What a wreck does to the lane it is sitting in.
++CRASH_LANE_BLOCKAGE = 0.25
++
+ 
+ @dataclass
+ class Vehicle:
+@@ -113,6 +122,13 @@ class Vehicle:
+     #: within earshot.
+     glosa_advice: float | None = None
+ 
++    # --- collision -------------------------------------------------------
++    #: Ticks left before the wreck is cleared. While non-zero this vehicle is
++    #: immobile, blocking its lane, and announcing the accident.
++    crashed_ticks: int = 0
++    #: Tick the collision happened, so the UI can say how long ago.
++    crashed_at_tick: int = -1
++
+     def __post_init__(self) -> None:
+         if not self.destination:
+             self._pick_new_destination()
+@@ -159,6 +175,23 @@ class Vehicle:
+         seg = self.grid.segment_between(self.node, nxt)
+         seg.occupancy = min(1.0, seg.occupancy + (0.02 if self.kind == "ambulance" else 0.05))
+ 
++        # A wreck does not drive. It sits in the lane, blocks it, and keeps
++        # announcing itself until it is cleared -- which is what gives the
++        # traffic behind time to be warned and rerouted.
++        if self.crashed_ticks > 0:
++            self.crashed_ticks -= 1
++            seg.occupancy = min(1.0, seg.occupancy + CRASH_LANE_BLOCKAGE)
++            self.glosa_advice = None
++            # A wreck is stationary, not deaf and blind. It already announces
++            # the accident, so refusing to share the pedestrian standing in
++            # front of it would be an odd place to draw the line -- and it
++            # silently starved collective perception on exactly the road where
++            # it matters most.
++            for message in (self._report_crash(seg, tick), self._maybe_share_perception(tick)):
++                if message is not None:
++                    outbound.append(message)
++            return outbound, False, None
++
+         # Greenshields-style speed/density relation: the busier the segment,
+         # the slower everyone on it moves. Without this, sitting in a jam is
+         # free and any detour is pure loss, which would make congestion-aware
+@@ -299,6 +332,47 @@ class Vehicle:
+             origin_segment=seg.id,
+         )
+ 
++    # --------------------------------------------------------- collision
++    def crash(self, tick: int) -> None:
++        """Involve this vehicle in a collision. The engine calls this on both
++        parties at once."""
++        self.crashed_ticks = CRASH_IMMOBILE_TICKS
++        self.crashed_at_tick = tick
++        self.braking_ticks = 0
++        self.yield_instruction = None
++
++    @property
++    def crashed(self) -> bool:
++        return self.crashed_ticks > 0
++
++    def _report_crash(self, seg, tick: int) -> Message | None:
++        """The wreck announcing itself: DENM causeCode 2, accident.
++
++        Confidence is 1.0 because the sender *is* the accident -- this is the
++        one hazard report that needs no corroborating witness to be certain,
++        even though the network still corroborates it like any other.
++        """
++        if tick % CRASH_REPORT_INTERVAL_TICKS != 0:
++            return None
++        cause_code, sub_cause_code = cause_for("accident")
++        payload = {
++            "segment_id": seg.id,
++            "hazard_type": "accident",
++            "cause_code": cause_code,
++            "sub_cause_code": sub_cause_code,
++            "confidence": 1.0,
++        }
++        return Message(
++            type=MessageType.DENM_HAZARD,
++            sender_id=self.id,
++            pseudonym=self.pseudonym,
++            payload=payload,
++            ttl=self.comm_range_hops,
++            created_tick=tick,
++            signature=sign(payload, self.signing_key),
++            origin_segment=seg.id,
++        )
++
+     # ------------------------------------ Porsche 2: collective perception
+     def _maybe_share_perception(self, tick: int) -> Message | None:
+         """TS 103 324 CPM: publish what this vehicle's sensors can see.
+@@ -473,4 +547,6 @@ class Vehicle:
+             # The three Porsche prototypes, as this vehicle experiences them.
+             "braking": self.braking_ticks > 0,
+             "glosa_advice": round(self.glosa_advice, 1) if self.glosa_advice is not None else None,
++            "crashed": self.crashed,
++            "crashed_ticks": self.crashed_ticks,
+         }
+diff --git a/backend/tests/test_porsche_use_cases.py b/backend/tests/test_porsche_use_cases.py
+index fdeff19..2ab6c2b 100644
+--- a/backend/tests/test_porsche_use_cases.py
++++ b/backend/tests/test_porsche_use_cases.py
+@@ -246,3 +246,97 @@ def test_the_city_keeps_stepping_after_vehicles_are_removed():
+     run(engine, 25)
+     assert len(engine.vehicles) == 2
+     assert engine.state_snapshot()["tick"] == 40
++
++
++# ------------------------------------------------------------- collisions
++def test_a_collision_immobilises_both_vehicles_and_blocks_the_lane():
++    engine = run(scene(), 10)
++    info = engine.trigger_collision()
++    assert info is not None
++
++    first, second = (engine.vehicles[v] for v in info["vehicles"])
++    assert first.crashed and second.crashed
++    assert engine.grid.segments[info["segment_id"]].hazard_active
++
++    before = first.position_xy()
++    run(engine, 5)
++    # A wreck does not drive away from its own accident.
++    assert first.position_xy() == before
++
++
++def test_a_wreck_announces_itself_and_the_network_confirms_it():
++    engine = run(scene(), 10)
++    info = engine.trigger_collision()
++    run(engine, 30)
++
++    seg = next(s for s in engine.state_snapshot()["segments"] if s["id"] == info["segment_id"])
++    assert seg["confirmed_incident"], "peers should corroborate a crash into a confirmed incident"
++    frames = engine.metrics.summary()["communication"]["frames_by_designator"]
++    assert frames.get("DENM", 0) > 0
++
++
++def test_the_wreck_is_eventually_cleared():
++    engine = run(scene(), 10)
++    engine.trigger_collision()
++    run(engine, 40)
++    assert not any(v.crashed for v in engine.vehicles.values())
++
++
++def test_a_collision_needs_two_vehicles_and_says_when_it_staged_one():
++    engine = run(scene(vehicles=1), 6)
++    info = engine.trigger_collision()
++    assert info is not None
++    # One vehicle in the city, so the second had to be brought in -- and the
++    # result says so rather than pretending traffic did it.
++    assert info["staged"] is True
++    assert len(info["vehicles"]) == 2
++
++
++def test_an_ambulance_is_dispatched_towards_the_incident_not_at_random():
++    engine = run(scene(), 10)
++    info = engine.trigger_collision()
++    junction = info["segment_id"].split("_")[0]
++
++    ambulance = engine.dispatch_ambulance_to(junction)
++    assert ambulance.destination == junction
++    # Regression: spawning at a random node put it *on* the incident roughly
++    # one time in sixteen, giving a route of one node -- no journey, no
++    # corridor, nothing to watch.
++    assert len(ambulance.route) > 1
++    assert ambulance.route[-1] == junction
++
++
++def test_the_dispatch_prefers_a_route_past_a_signalised_junction():
++    """Regression: priority is requested for junctions *ahead*, so an origin
++    whose only light is under its own wheels asked for nothing."""
++    engine = run(scene(), 10)
++    info = engine.trigger_collision()
++    junction = info["segment_id"].split("_")[0]
++    ambulance = engine.dispatch_ambulance_to(junction)
++
++    lights = set(engine.traffic_lights)
++    if any(
++        any(hop in lights for hop in engine.grid.shortest_path(n, junction)[1:])
++        for n in engine.grid.nodes
++        if n != junction
++    ):
++        assert any(hop in lights for hop in ambulance.route[1:])
++
++
++def test_a_wreck_still_shares_what_it_can_see():
++    """Regression: a crashed vehicle returned early from its tick, so it
++    announced the accident but never shared the pedestrian standing in front
++    of it -- starving collective perception on the one road where a stopped
++    car is the only thing with a view."""
++    engine = run(scene(), 10)
++    info = engine.trigger_collision()
++    wreck = engine.vehicles[info["vehicles"][0]]
++    assert wreck.crashed
++
++    wreck.seen_pedestrians = {info["segment_id"]: engine.tick}
++    seg = engine.grid.segments[info["segment_id"]]
++    messages, _, _ = wreck.step(engine.tick, allow_v2v=True, allow_rerouting=True)
++
++    assert any(m.type == MessageType.CPM for m in messages)
++    assert any(m.type == MessageType.DENM_HAZARD for m in messages) or engine.tick % 3 != 0
++    assert seg is not None
+diff --git a/frontend/src/App.tsx b/frontend/src/App.tsx
+index abfb43a..fa4d8d6 100644
+--- a/frontend/src/App.tsx
++++ b/frontend/src/App.tsx
+@@ -1,6 +1,7 @@
+ import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
+ import { ErrorBoundary } from "./components/ErrorBoundary";
+ import { Home } from "./pages/Home";
++import { GuidedDemo } from "./pages/GuidedDemo";
+ import { StreetView } from "./pages/StreetView";
+ import { ControlCenter } from "./pages/ControlCenter";
+ import { Federated } from "./pages/Federated";
+@@ -10,6 +11,7 @@ import { Architecture } from "./pages/Architecture";
+ 
+ const NAV = [
+   { to: "/", label: "Overview", end: true },
++  { to: "/demo", label: "Guided Demo" },
+   { to: "/street", label: "Street View" },
+   { to: "/control", label: "Control Centre" },
+   { to: "/federated", label: "Federated Learning" },
+@@ -54,6 +56,7 @@ export default function App() {
+         <ErrorBoundary key={location.pathname} area="This page">
+           <Routes>
+             <Route path="/" element={<Home />} />
++            <Route path="/demo" element={<GuidedDemo />} />
+             <Route path="/street" element={<StreetView />} />
+             <Route path="/control" element={<ControlCenter />} />
+             <Route path="/federated" element={<Federated />} />
+diff --git a/frontend/src/components/Narration.tsx b/frontend/src/components/Narration.tsx
+index ede5666..0601997 100644
+--- a/frontend/src/components/Narration.tsx
++++ b/frontend/src/components/Narration.tsx
+@@ -55,7 +55,32 @@ function describe(state: SimulationState): Line[] {
+   const out: Line[] = [];
+   const name = (id: string) => (id.startsWith("rsu-") ? id.replace("rsu-", "Roadside unit ") : id);
+ 
++  // Every signalised junction broadcasts on the same duty cycle, so on a
++  // dense grid SPaT is most of the traffic and floods out everything worth
++  // reading. One line per tick says the same thing and leaves room for the
++  // events a viewer actually came to see.
++  const spatPerTick = new Map<number, number>();
++  for (const t of state.transmissions)
++    if (t.designator === "SPATEM") spatPerTick.set(t.tick, (spatPerTick.get(t.tick) ?? 0) + 1);
++  const spatEmitted = new Set<number>();
++
+   for (const t of state.transmissions) {
++    if (t.designator === "SPATEM") {
++      if (spatEmitted.has(t.tick)) continue;
++      spatEmitted.add(t.tick);
++      const n = spatPerTick.get(t.tick) ?? 1;
++      out.push({
++        key: `spat-${t.tick}`,
++        tick: t.tick,
++        tone: "signal",
++        text:
++          n === 1
++            ? `The signal at ${t.origin_node} broadcast its phase so approaching cars know what it will be doing.`
++            : `${n} junctions broadcast their phase so approaching cars know what the lights will do.`,
++      });
++      continue;
++    }
++
+     const heard = t.delivered_to.length;
+     const audience =
+       heard === 0
+diff --git a/frontend/src/components/StreetMap.tsx b/frontend/src/components/StreetMap.tsx
+index 2756e64..0b17c09 100644
+--- a/frontend/src/components/StreetMap.tsx
++++ b/frontend/src/components/StreetMap.tsx
+@@ -286,6 +286,13 @@ export function StreetMap({
+                 shape, so without this, clicking a car mostly selects the road
+                 underneath it. */}
+             <circle r={14} fill="transparent" />
++            {/* A wreck: immobile, blocking the lane, still broadcasting. */}
++            {v.crashed && (
++              <>
++                <circle r={21} fill="#ff5a5a" opacity={0.2} className="incident-pulse" />
++                <circle r={15} fill="none" stroke="#ff5a5a" strokeWidth={2.5} />
++              </>
++            )}
+             {v.yielding && <circle r={20} fill="#f0b429" opacity={0.22} />}
+             {/* Braking hard right now — the frame telling the traffic behind
+                 is on the air this very tick. */}
+@@ -296,12 +303,14 @@ export function StreetMap({
+             )}
+             {selected && <circle r={19} fill="none" stroke="#fff" strokeWidth={2} opacity={0.85} />}
+             <g transform={`rotate(${angle})`}>
+-              {/* A wedge, so heading is readable at a glance. */}
++              {/* A wedge, so heading is readable at a glance. A wreck is
++                  drawn askew and greyed — it is not going anywhere. */}
+               <path
+                 d="M 11 0 L -7 7 L -4 0 L -7 -7 Z"
+-                fill={fill}
++                fill={v.crashed ? "#8b6b6b" : fill}
+                 stroke="#0a1018"
+                 strokeWidth={1.2}
++                transform={v.crashed ? "rotate(34)" : undefined}
+                 filter={v.kind === "ambulance" ? "url(#glow)" : undefined}
+               />
+             </g>
+diff --git a/frontend/src/pages/GuidedDemo.tsx b/frontend/src/pages/GuidedDemo.tsx
+new file mode 100644
+index 0000000..f6001b3
+--- /dev/null
++++ b/frontend/src/pages/GuidedDemo.tsx
+@@ -0,0 +1,301 @@
++import { useState } from "react";
++
++import { Narration } from "../components/Narration";
++import { StreetMap } from "../components/StreetMap";
++import { SPEEDS, guided, useGuided } from "../sim/guidedRuntime";
++import { ALL_SCENARIOS } from "../sim/scenarios";
++import type { SimulationState } from "../types";
++
++/**
++ * The demo you put in front of someone who has never heard of V2X.
++ *
++ * The control centre answers "how well does this perform"; the street view is
++ * a sandbox to poke at. Neither answers the question an audience actually
++ * has, which is "what is this thing doing and why should I care". That needs
++ * a story with a beginning and an end, and a way to see the story's claims
++ * being met — or not met — by the live system rather than by an animation.
++ *
++ * Hence the checklist down the right-hand side. Each line is something the
++ * scenario says will happen; it ticks off, with the tick number it happened
++ * on, only when the running simulation actually does it.
++ */
++export function GuidedDemo() {
++  const { state, story, playing, speedIndex } = useGuided();
++  const [selectedVehicle, setSelectedVehicle] = useState<string | null>(null);
++  const [selectedSegment, setSelectedSegment] = useState<string | null>(null);
++  const [showDetail, setShowDetail] = useState(false);
++
++  if (!state) return <div className="loading">Starting the simulator…</div>;
++
++  const elapsed = story.scenario ? state.tick - story.startedTick : 0;
++  const doneCount = story.achieved.filter((a) => a !== null).length;
++  // Progress is measured in steps taken, not ticks elapsed. These cascades
++  // finish in a handful of ticks, so a tick bar would sit near zero for a
++  // story that has already told itself — the opposite of the truth.
++  const required = story.scenario?.beats.filter((b) => !b.optional).length ?? 0;
++  const requiredDone =
++    story.scenario?.beats.filter((b, i) => !b.optional && story.achieved[i] !== null).length ?? 0;
++  const progress = required ? (requiredDone / required) * 100 : 0;
++
++  return (
++    <div className="stack guided">
++      <div className="page-head">
++        <div>
++          <h1>Guided demo</h1>
++          <p className="muted">
++            Pick a story below. Everything you see is the real simulation running in this tab — the
++            checklist ticks off only when the system actually does the thing, so a step that fails
++            stays dark.
++          </p>
++        </div>
++      </div>
++
++      {/* ------------------------------------------------- scenario picker */}
++      <section className="scenario-picker" role="group" aria-label="Choose a scenario">
++        {ALL_SCENARIOS.map((s) => (
++          <button
++            key={s.id}
++            className={story.scenario?.id === s.id ? "scenario-card active" : "scenario-card"}
++            onClick={() => {
++              guided.runScenario(s.id);
++              setSelectedSegment(null);
++              setSelectedVehicle(null);
++            }}
++          >
++            <span className="scenario-icon">{s.icon}</span>
++            <span className="scenario-title">{s.title}</span>
++          </button>
++        ))}
++      </section>
++
++      <div className="guided-body">
++        <section className="panel guided-map-panel">
++          {story.scenario && (
++            <div className="story-hook">
++              <strong>
++                {story.scenario.icon} {story.scenario.title}
++              </strong>
++              <p>{story.scenario.hook}</p>
++            </div>
++          )}
++
++          <div className="guided-map">
++            <StreetMap
++              state={state}
++              selectedVehicle={selectedVehicle}
++              onSelectVehicle={setSelectedVehicle}
++              selectedSegment={selectedSegment}
++              onSelectSegment={setSelectedSegment}
++            />
++          </div>
++
++          <div className="street-legend">
++            <span>
++              <i className="key-wedge" style={{ background: "#7dd3fc" }} /> car
++            </span>
++            <span>
++              <i className="key-wedge" style={{ background: "#f87171" }} /> ambulance
++            </span>
++            <span>
++              <i className="key-wedge" style={{ background: "#c084fc" }} /> attacker
++            </span>
++            <span>
++              <i className="key-crash" /> wreck
++            </span>
++            <span>
++              <i className="key-ped" /> pedestrian
++            </span>
++            <span>
++              <i className="key-ring" style={{ borderColor: "#3987e5" }} /> “here I am”
++            </span>
++            <span>
++              <i className="key-ring" style={{ borderColor: "#e66767" }} /> “something happened”
++            </span>
++            <span>
++              <i className="key-ring" style={{ borderColor: "#f0b429" }} /> “someone is here”
++            </span>
++            <span>
++              <i className="key-ring" style={{ borderColor: "#199e70" }} /> signal phase
++            </span>
++          </div>
++
++          {/* ------------------------------------------------- transport */}
++          <div className="guided-transport">
++            <button className="btn primary" onClick={() => (playing ? guided.pause() : guided.play())}>
++              {playing ? "⏸ Pause" : "▶ Play"}
++            </button>
++            <button className="btn" onClick={() => guided.stepOnce()}>
++              ⏭ Step
++            </button>
++            <button
++              className="btn"
++              onClick={() => {
++                guided.reset();
++                setSelectedVehicle(null);
++                setSelectedSegment(null);
++              }}
++            >
++              ↺ Reset city
++            </button>
++            <div className="transport-speed" role="group" aria-label="Speed">
++              {SPEEDS.map((s, i) => (
++                <button
++                  key={s.label}
++                  className={i === speedIndex ? "chip active" : "chip"}
++                  onClick={() => guided.setSpeed(i)}
++                >
++                  {s.label}
++                </button>
++              ))}
++            </div>
++            <span className="transport-tick">
++              tick <strong>{state.tick}</strong>
++            </span>
++          </div>
++        </section>
++
++        <aside className="side">
++          {/* ----------------------------------------------- the checklist */}
++          <div className="panel story-panel">
++            <h2>
++              What should happen
++              {story.scenario && (
++                <span className="story-count">
++                  {doneCount}/{story.scenario.beats.length}
++                </span>
++              )}
++            </h2>
++
++            {!story.scenario ? (
++              <p className="muted small">
++                Choose a story above and it will play out here, step by step. Nothing is scripted —
++                each step lights up when the simulation genuinely does it.
++              </p>
++            ) : (
++              <>
++                <div className="story-progress">
++                  <div className="story-bar">
++                    <div className="story-fill" style={{ width: `${progress}%` }} />
++                  </div>
++                  <span className="small muted">
++                    {story.finished ? `done in ${elapsed} ticks` : `${requiredDone} of ${required}`}
++                  </span>
++                </div>
++
++                <ol className="beats">
++                  {story.scenario.beats.map((beat, i) => {
++                    const at = story.achieved[i];
++                    return (
++                      <li
++                        key={beat.text}
++                        className={[
++                          "beat",
++                          at !== null ? "done" : "",
++                          beat.optional && at === null ? "optional" : "",
++                        ]
++                          .filter(Boolean)
++                          .join(" ")}
++                      >
++                        <span className="beat-mark">{at !== null ? "✓" : i + 1}</span>
++                        <span className="beat-body">
++                          <span className="beat-text">{beat.text}</span>
++                          {at !== null && <span className="beat-tick">tick {at}</span>}
++                          {/* A step that legitimately may not fire has to say
++                              so, or a dark line reads as a broken demo rather
++                              than as a lossy radio behaving honestly. */}
++                          {beat.optional && at === null && (
++                            <span className="beat-maybe">doesn’t happen every run</span>
++                          )}
++                          {showDetail && beat.detail && (
++                            <span className="beat-detail">{beat.detail}</span>
++                          )}
++                        </span>
++                      </li>
++                    );
++                  })}
++                </ol>
++
++                <button className="btn tiny" onClick={() => setShowDetail((d) => !d)}>
++                  {showDetail ? "Hide the standards detail" : "Show the standards detail"}
++                </button>
++
++                {story.finished && (
++                  <p className="story-done">
++                    {doneCount === story.scenario.beats.length
++                      ? `Every step happened, in ${elapsed} ${elapsed === 1 ? "tick" : "ticks"}.`
++                      : "Every step that had to happen, happened — the greyed ones depend on the radio and the road layout."}{" "}
++                    {story.pausedOnFinish
++                      ? "Paused here so you can look at it — press Play to carry on, or pick another story."
++                      : "Press Play to carry on, or pick another story."}
++                  </p>
++                )}
++
++                {story.ticks >= 200 && !story.finished && (
++                  <p className="muted small story-slow">
++                    This is the long one — it needs a few hundred ticks of evidence. Try{" "}
++                    <strong>Fast</strong>.
++                  </p>
++                )}
++              </>
++            )}
++          </div>
++
++          <KeyNumbers state={state} />
++          <Narration state={state} lines={7} />
++        </aside>
++      </div>
++    </div>
++  );
++}
++
++/**
++ * The handful of numbers worth saying out loud, in words rather than jargon.
++ *
++ * The control centre has twelve metrics because it is an instrument. An
++ * audience can hold about five.
++ */
++function KeyNumbers({ state }: { state: SimulationState }) {
++  const m = state.metrics;
++  const rows: { label: string; value: string; note: string }[] = [
++    {
++      label: "Cars talking to each other",
++      value: String(state.vehicles.length),
++      note: `${m.communication.messages_sent.toLocaleString()} messages sent so far`,
++    },
++    {
++      label: "Warned about something unseen",
++      value: String(state.perception.warned_blind),
++      note: "acted on a road user they had no line of sight to",
++    },
++    {
++      label: "Incidents the network confirmed",
++      value: String(state.segments.filter((s) => s.confirmed_incident).length),
++      note: `spotted in ${m.communication.avg_alert_latency_ticks} ticks on average`,
++    },
++    {
++      label: "Learning rounds completed",
++      value: String(state.federated.rounds_completed),
++      note: `${state.federated.total_raw_kilobytes_avoided.toFixed(0)} KB of raw data never uploaded`,
++    },
++    {
++      label: "Radio actually delivered",
++      value: `${Math.round(m.communication.packet_delivery_ratio * 100)}%`,
++      note: "the rest was lost on the air, as it would be in the field",
++    },
++  ];
++
++  return (
++    <div className="panel key-numbers">
++      <h2>Worth saying out loud</h2>
++      {rows.map((r) => (
++        <div key={r.label} className="key-row">
++          <span className="key-value">{r.value}</span>
++          <span className="key-body">
++            <span className="key-label">{r.label}</span>
++            <span className="key-note">{r.note}</span>
++          </span>
++        </div>
++      ))}
++    </div>
++  );
++}
+diff --git a/frontend/src/sim/agents.ts b/frontend/src/sim/agents.ts
+index 1669a06..4b7aece 100644
+--- a/frontend/src/sim/agents.ts
++++ b/frontend/src/sim/agents.ts
+@@ -34,6 +34,13 @@ const PEDESTRIAN_CAUTION_FACTOR = 0.45;
+ /** Closer than this to the junction, holding a speed for the green is worth
+  *  advising. */
+ const GLOSA_APPROACH_PROGRESS = 0.35;
++/** How long a wreck sits in the carriageway before it is cleared. */
++const CRASH_IMMOBILE_TICKS = 22;
++/** A wrecked vehicle re-announces itself on this duty cycle. Every tick would
++ *  be both unrealistic and a denial of service on its own neighbours. */
++const CRASH_REPORT_INTERVAL_TICKS = 3;
++/** What a wreck does to the lane it is sitting in. */
++const CRASH_LANE_BLOCKAGE = 0.25;
+ const REROUTE_LOOKAHEAD_HOPS = 3;
+ const HAZARD_SENSE_PROBABILITY = 0.6;
+ const LOOKAHEAD_SENSE_PROBABILITY = 0.3;
+@@ -58,6 +65,11 @@ export class Vehicle {
+   // --- Porsche prototype 3: GLOSA
+   knownSignals = new Map<string, { phase: string; tick: number }>();
+   glosaAdvice: number | null = null;
++  // --- collision
++  /** Ticks left before the wreck is cleared. While non-zero this vehicle is
++   *  immobile, blocking its lane, and announcing the accident. */
++  crashedTicks = 0;
++  crashedAtTick = -1;
+   tripStartedTick = 0;
+   /** Peer-shared knowledge only — written solely by receiveOccupancyPing, so
+    *  rerouting is a genuine decentralized decision rather than a read of
+@@ -114,6 +126,22 @@ export class Vehicle {
+     const seg = this.grid.segmentBetween(this.node, nxt);
+     seg.occupancy = Math.min(1, seg.occupancy + (this.kind === "ambulance" ? 0.02 : 0.05));
+ 
++    // A wreck does not drive. It sits in the lane, blocks it, and keeps
++    // announcing itself until it is cleared — which is what gives the traffic
++    // behind time to be warned and rerouted.
++    if (this.crashedTicks > 0) {
++      this.crashedTicks -= 1;
++      seg.occupancy = Math.min(1, seg.occupancy + CRASH_LANE_BLOCKAGE);
++      this.glosaAdvice = null;
++      // A wreck is stationary, not deaf and blind. It already announces the
++      // accident, so refusing to share the pedestrian standing in front of it
++      // would be an odd place to draw the line — and it silently starved
++      // collective perception on exactly the road where it matters most.
++      for (const message of [this.reportCrash(seg, tick), this.maybeSharePerception(tick)])
++        if (message) outbound.push(message);
++      return { outbound, rerouted, completedTrip };
++    }
++
+     // Greenshields-style speed/density relation: without it, sitting in a jam
+     // is free and any detour is pure loss.
+     let speed = this.speedKmh * Math.max(0.25, 1 - 0.75 * seg.occupancy);
+@@ -207,6 +235,45 @@ export class Vehicle {
+     });
+   }
+ 
++  // --------------------------------------------------------- collision
++  /** Involve this vehicle in a collision. The engine calls it on both
++   *  parties at once. */
++  crash(tick: number) {
++    this.crashedTicks = CRASH_IMMOBILE_TICKS;
++    this.crashedAtTick = tick;
++    this.brakingTicks = 0;
++    this.yieldInstruction = null;
++  }
++
++  get crashed(): boolean {
++    return this.crashedTicks > 0;
++  }
++
++  /** The wreck announcing itself: DENM causeCode 2, accident.
++   *
++   *  Confidence is 1.0 because the sender *is* the accident — the one hazard
++   *  report that needs no corroborating witness to be certain, even though
++   *  the network still corroborates it like any other. */
++  private reportCrash(seg: Segment, tick: number): Message | null {
++    if (tick % CRASH_REPORT_INTERVAL_TICKS !== 0) return null;
++    const [causeCode, subCauseCode] = causeFor("accident");
++    return makeMessage({
++      type: "denm-hazard",
++      senderId: this.id,
++      pseudonym: this.pseudonym,
++      payload: {
++        segment_id: seg.id,
++        hazard_type: "accident",
++        cause_code: causeCode,
++        sub_cause_code: subCauseCode,
++        confidence: 1,
++      },
++      ttl: 3,
++      createdTick: tick,
++      signed: true,
++    });
++  }
++
+   // --------------------------------- Porsche 1: emergency brake light
+   /** DENM cause 99/1, emergencyElectronicBrakeEngaged.
+    *
+@@ -395,6 +462,8 @@ export class Vehicle {
+       reroute_count: this.rerouteCount,
+       braking: this.brakingTicks > 0,
+       glosa_advice: this.glosaAdvice === null ? null : Math.round(this.glosaAdvice * 10) / 10,
++      crashed: this.crashed,
++      crashed_ticks: this.crashedTicks,
+     };
+   }
+ }
+diff --git a/frontend/src/sim/engine.ts b/frontend/src/sim/engine.ts
+index 2af9adc..3376a07 100644
+--- a/frontend/src/sim/engine.ts
++++ b/frontend/src/sim/engine.ts
+@@ -50,6 +50,9 @@ const SIGNAL_REQUEST_TTL_HOPS = 2;
+ const TRANSMISSION_LOG_LIMIT = 60;
+ /** How long a pedestrian stays on the crossing. */
+ const PEDESTRIAN_CROSSING_TICKS = 10;
++/** How long a wreck keeps the road hazardous. Longer than the vehicles stay
++ *  immobile, because debris outlives the recovery truck. */
++const CRASH_HAZARD_TTL_TICKS = 30;
+ 
+ export class MetricsCollector {
+   packetsIntended = 0;
+@@ -290,6 +293,8 @@ export class SimulationEngine {
+    *  something. `warnedBlind` is the one that matters: a vehicle acted on a
+    *  pedestrian it could not itself see. */
+   perceptionStats = { shared: 0, warnedBlind: 0, brakeWarnings: 0 };
++  /** Recent collisions, newest last, so the UI can narrate them. */
++  collisions: { tick: number; segment_id: string; vehicles: string[] }[] = [];
+   metrics = new MetricsCollector();
+   federation = new FederatedCoordinator();
+   trust = new TrustRegistry();
+@@ -423,6 +428,101 @@ export class SimulationEngine {
+     return pid;
+   }
+ 
++  /**
++   * Stage a real collision between two vehicles.
++   *
++   * This is the most watchable thing the system does, because one event
++   * chains four modules together: both wrecks broadcast, the traffic behind
++   * is warned before it can see anything, peers corroborate the report into a
++   * confirmed incident, and the emergency response opens a corridor through
++   * it.
++   *
++   * Prefers a road that genuinely has two vehicles on it. Only if no such
++   * road exists does it place a second vehicle there, which is a demo
++   * affordance rather than something traffic does — the returned `staged`
++   * flag and the event log say which of the two happened.
++   */
++  triggerCollision(segmentId?: string): { segment_id: string; vehicles: string[]; staged: boolean } | null {
++    const eligible = new Map<string, Vehicle[]>();
++    for (const vehicle of this.vehicles.values()) {
++      const segId = vehicle.currentSegmentId;
++      if (!segId || vehicle.crashed || vehicle.kind === "ambulance") continue;
++      if (segmentId && segId !== segmentId) continue;
++      if (!eligible.has(segId)) eligible.set(segId, []);
++      eligible.get(segId)!.push(vehicle);
++    }
++
++    const pairs = [...eligible.entries()].filter(([, vs]) => vs.length >= 2);
++    let crashSegment: string;
++    let first: Vehicle;
++    let second: Vehicle;
++    let staged = false;
++
++    if (pairs.length) {
++      const [segId, vs] = pairs[this.rng.int(0, pairs.length - 1)];
++      crashSegment = segId;
++      [first, second] = vs;
++    } else if (eligible.size) {
++      // Nobody is sharing a road. Bring a second vehicle onto one.
++      const keys = [...eligible.keys()].sort();
++      crashSegment = keys[this.rng.int(0, keys.length - 1)];
++      first = eligible.get(crashSegment)![0];
++      second = this.spawnVehicle("car");
++      second.node = first.node;
++      second.route = [...first.route];
++      second.progress = Math.max(0, first.progress - 0.08);
++      staged = true;
++    } else {
++      return null;
++    }
++
++    const seg = this.grid.segments.get(crashSegment)!;
++    first.crash(this.tick);
++    second.crash(this.tick);
++    seg.raiseHazard("accident", CRASH_HAZARD_TTL_TICKS, this.tick);
++    this.metrics.hazardRaised(seg.id, this.tick);
++    this.collisions.push({ tick: this.tick, segment_id: seg.id, vehicles: [first.id, second.id] });
++    if (this.collisions.length > 10) this.collisions.shift();
++
++    const how = staged ? "a second vehicle was brought onto the road" : "two vehicles already there";
++    this.log("collision", `Collision on ${seg.id} between ${first.id} and ${second.id} (${how}).`);
++    return { segment_id: seg.id, vehicles: [first.id, second.id], staged };
++  }
++
++  /**
++   * Send an ambulance towards a specific junction.
++   *
++   * `spawnVehicle` gives an ambulance a random errand, which is fine for
++   * background traffic and useless for showing a response to an incident that
++   * just happened somewhere specific.
++   */
++  dispatchAmbulanceTo(node: string): Vehicle {
++    const ambulance = this.spawnVehicle("ambulance");
++    // Start it far enough away to actually be seen responding. Spawning at a
++    // random node put it *on* the incident about one time in sixteen, giving
++    // a route of one node: no journey, no corridor, no priority request, and
++    // nothing for a viewer to watch.
++    const byDistance = [...this.grid.nodes.keys()]
++      .filter((n) => n !== node)
++      .sort((a, b) => this.grid.euclidean(b, node) - this.grid.euclidean(a, node));
++    const far = byDistance.slice(0, Math.max(1, Math.floor(byDistance.length / 4)));
++    // Prefer a station whose route passes a signalised junction it has not
++    // already reached. Priority is requested for junctions *ahead*, so an
++    // origin whose only light is the one under its own wheels asks for
++    // nothing — which looked like a lost request and was really a bad
++    // dispatch. Choosing where to send from is a dispatcher's decision; it
++    // does not touch whether the request is heard or granted.
++    const viaSignal = far.filter((origin) =>
++      this.grid.shortestPath(origin, node).slice(1).some((hop) => this.trafficLights.has(hop)),
++    );
++    ambulance.node = this.rng.pick(viaSignal.length ? viaSignal : far);
++    ambulance.destination = node;
++    ambulance.route = this.grid.shortestPath(ambulance.node, node);
++    ambulance.progress = 0;
++    this.log("ambulance_dispatch", `${ambulance.id} responding to ${node}.`);
++    return ambulance;
++  }
++
+   /**
+    * Take a car off the road.
+    *
+@@ -1075,6 +1175,7 @@ export class SimulationEngine {
+           .map((v) => v.id)
+           .sort(),
+       })),
++      collisions: [...this.collisions],
+       perception: {
+         shared: this.perceptionStats.shared,
+         warned_blind: this.perceptionStats.warnedBlind,
+diff --git a/frontend/src/sim/guidedRuntime.ts b/frontend/src/sim/guidedRuntime.ts
+new file mode 100644
+index 0000000..189eaca
+--- /dev/null
++++ b/frontend/src/sim/guidedRuntime.ts
+@@ -0,0 +1,236 @@
++/**
++ * The guided demo's engine and its story state.
++ *
++ * Separate from `demoRuntime` on purpose. That one is a free-play sandbox
++ * where nothing happens unless you make it happen; this one is a presenter's
++ * tool that stages a specific event and then tracks whether the system
++ * actually did the things the story claims it does.
++ *
++ * The beats are watched, never asserted. If a scenario says an ambulance will
++ * be granted priority and the request is lost on the air, that beat stays
++ * dark — which is the truthful way to demonstrate a lossy radio, and far more
++ * convincing than a scripted animation that always succeeds.
++ */
++import { useEffect, useState } from "react";
++import { CONFIGS, SimulationEngine } from "./engine";
++import { ALL_SCENARIOS, baselineOf, type Baseline, type Scenario } from "./scenarios";
++import type { SimulationState } from "../types";
++
++/** Small enough to follow every car, dense enough in roadside units that an
++ *  ambulance usually meets a signalised junction on its way. */
++export const GUIDED_GRID_SIZE = 4;
++export const GUIDED_RSU_COUNT = 9;
++export const GUIDED_VEHICLE_COUNT = 7;
++
++/** Deliberately unhurried. A demo you cannot narrate over is a demo nobody
++ *  understands. */
++export const SPEEDS = [
++  { label: "Slow", ms: 1400 },
++  { label: "Normal", ms: 800 },
++  { label: "Fast", ms: 380 },
++] as const;
++
++export const DEFAULT_SPEED_INDEX = 1;
++
++export interface StoryState {
++  scenario: Scenario | null;
++  /** Beat index -> the tick it became true, or null while still pending. */
++  achieved: (number | null)[];
++  startedTick: number;
++  /** Roughly how long the story runs, used only to flag the long one. */
++  ticks: number;
++  finished: boolean;
++  /** The runtime stopped the clock because the story reached its end. */
++  pausedOnFinish: boolean;
++}
++
++function build(seed: number): SimulationEngine {
++  return new SimulationEngine({
++    gridSize: GUIDED_GRID_SIZE,
++    numRsus: GUIDED_RSU_COUNT,
++    numVehicles: GUIDED_VEHICLE_COUNT,
++    config: CONFIGS.exp3_full,
++    seed,
++    // Random hazards would interrupt the story being told.
++    autoHazards: false,
++    inferenceInterval: 2,
++    explainPredictions: true,
++  });
++}
++
++let engine = build(Math.floor(Math.random() * 1e9));
++let scenario: Scenario | null = null;
++let baseline: Baseline | null = null;
++let achieved: (number | null)[] = [];
++let startedTick = 0;
++let pausedOnFinish = false;
++
++const listeners = new Set<() => void>();
++let timer: number | undefined;
++let playing = false;
++let speedIndex = DEFAULT_SPEED_INDEX;
++let snapshot: SimulationState = engine.stateSnapshot();
++
++function story(): StoryState {
++  return {
++    scenario,
++    achieved: [...achieved],
++    startedTick,
++    ticks: scenario?.ticks ?? 0,
++    // Optional beats genuinely may not fire, so they must not hold the story
++    // open forever — but a required beat that never lands should.
++    finished:
++      Boolean(scenario) &&
++      (scenario?.beats ?? []).every((beat, i) => beat.optional || achieved[i] !== null),
++    pausedOnFinish,
++  };
++}
++
++/** Check every pending beat against the live state and latch the ones that
++ *  have become true. Latching matters: a beat like "a car is braking" is only
++ *  momentarily true, and a checklist that un-ticks itself is unreadable. */
++function latchBeats() {
++  if (!scenario || !baseline) return;
++  const wasFinished = story().finished;
++  scenario.beats.forEach((beat, i) => {
++    if (achieved[i] !== null) return;
++    let hit = false;
++    try {
++      hit = beat.done(snapshot, baseline!);
++    } catch {
++      // A predicate that throws is a bug in the story, not a reason to take
++      // the whole page down mid-demo.
++      hit = false;
++    }
++    if (hit) achieved[i] = snapshot.tick;
++  });
++
++  // Freeze on the payoff. These cascades finish in a handful of ticks — the
++  // crash story is done by tick 3 — so left running, the scene the checklist
++  // is describing has scrolled away before anyone can look at it.
++  if (!wasFinished && story().finished && playing) {
++    playing = false;
++    clearTimer();
++    pausedOnFinish = true;
++  }
++}
++
++function publish() {
++  snapshot = engine.stateSnapshot();
++  latchBeats();
++  for (const listener of listeners) listener();
++}
++
++function clearTimer() {
++  if (timer !== undefined) window.clearInterval(timer);
++  timer = undefined;
++}
++
++function startTimer() {
++  clearTimer();
++  timer = window.setInterval(() => {
++    engine.step();
++    publish();
++  }, SPEEDS[speedIndex].ms);
++}
++
++export const guided = {
++  get playing() {
++    return playing;
++  },
++  get speedIndex() {
++    return speedIndex;
++  },
++  get state() {
++    return snapshot;
++  },
++  get story() {
++    return story();
++  },
++
++  play() {
++    pausedOnFinish = false;
++    playing = true;
++    startTimer();
++    publish();
++  },
++
++  pause() {
++    playing = false;
++    clearTimer();
++    publish();
++  },
++
++  stepOnce() {
++    pausedOnFinish = false;
++    playing = false;
++    clearTimer();
++    engine.step();
++    publish();
++  },
++
++  setSpeed(index: number) {
++    speedIndex = Math.max(0, Math.min(index, SPEEDS.length - 1));
++    if (playing) startTimer();
++    publish();
++  },
++
++  /**
++   * Begin a story: snapshot the world as it stands, stage the event, and
++   * start watching for the beats.
++   */
++  runScenario(id: string) {
++    const next = ALL_SCENARIOS.find((s) => s.id === id);
++    if (!next) return;
++    scenario = next;
++    baseline = baselineOf(engine.stateSnapshot());
++    achieved = next.beats.map(() => null);
++    startedTick = engine.tick;
++    pausedOnFinish = false;
++    next.setup(engine);
++    playing = true;
++    startTimer();
++    publish();
++  },
++
++  /** Drop the story but leave the city running. */
++  clearScenario() {
++    scenario = null;
++    baseline = null;
++    achieved = [];
++    publish();
++  },
++
++  /** Fresh city, fresh story. */
++  reset(seed = Math.floor(Math.random() * 1e9)) {
++    clearTimer();
++    playing = false;
++    engine = build(seed);
++    scenario = null;
++    baseline = null;
++    achieved = [];
++    startedTick = 0;
++    pausedOnFinish = false;
++    publish();
++  },
++};
++
++export function useGuided() {
++  const [, force] = useState(0);
++
++  useEffect(() => {
++    const listener = () => force((n) => n + 1);
++    listeners.add(listener);
++    // Pick the scene back up where the viewer left it rather than restarting
++    // it, but never let it run on while nobody is watching.
++    if (playing) startTimer();
++    listener();
++
++    return () => {
++      listeners.delete(listener);
++      if (listeners.size === 0) clearTimer();
++    };
++  }, []);
++
++  return { state: snapshot, story: story(), playing, speedIndex };
++}
+diff --git a/frontend/src/sim/porsche.test.ts b/frontend/src/sim/porsche.test.ts
+index 93e9d5e..a7b1e42 100644
+--- a/frontend/src/sim/porsche.test.ts
++++ b/frontend/src/sim/porsche.test.ts
+@@ -211,3 +211,96 @@ describe("traffic light interaction", () => {
+     expect(vehicle.glosaAdviceFor(nxt, engine.tick, 40)).toBeNull();
+   });
+ });
++
++// ---------------------------------------------------------- collisions
++describe("collisions", () => {
++  const city = (seed = 4, numVehicles = 8) =>
++    new SimulationEngine({ seed, gridSize: 4, numRsus: 9, numVehicles, autoHazards: false });
++
++  it("immobilises both vehicles and blocks the lane", () => {
++    const e = run(city(), 10);
++    const info = e.triggerCollision()!;
++    expect(info).not.toBeNull();
++
++    const [first, second] = info.vehicles.map((id) => e.vehicles.get(id)!);
++    expect(first.crashed).toBe(true);
++    expect(second.crashed).toBe(true);
++    expect(e.grid.segments.get(info.segment_id)!.hazardActive).toBe(true);
++
++    const before = first.positionXY();
++    run(e, 5);
++    // A wreck does not drive away from its own accident.
++    expect(first.positionXY()).toEqual(before);
++  });
++
++  it("announces itself and the network confirms it", () => {
++    const e = run(city(), 10);
++    const info = e.triggerCollision()!;
++    run(e, 30);
++
++    const seg = e.stateSnapshot().segments.find((s) => s.id === info.segment_id)!;
++    expect(seg.confirmed_incident).toBe(true);
++    expect(e.metrics.summary().communication.frames_by_designator.DENM ?? 0).toBeGreaterThan(0);
++  });
++
++  it("clears the wreck eventually", () => {
++    const e = run(city(), 10);
++    e.triggerCollision();
++    run(e, 40);
++    expect([...e.vehicles.values()].some((v) => v.crashed)).toBe(false);
++  });
++
++  it("says when it had to stage the second vehicle", () => {
++    const e = run(city(4, 1), 6);
++    const info = e.triggerCollision()!;
++    // One vehicle in the city, so the second had to be brought in — and the
++    // result says so rather than pretending traffic did it.
++    expect(info.staged).toBe(true);
++    expect(info.vehicles).toHaveLength(2);
++  });
++
++  it("dispatches an ambulance towards the incident, not at random", () => {
++    const e = run(city(), 10);
++    const info = e.triggerCollision()!;
++    const junction = info.segment_id.split("_")[0];
++
++    const ambulance = e.dispatchAmbulanceTo(junction);
++    expect(ambulance.destination).toBe(junction);
++    // Regression: spawning at a random node put it *on* the incident roughly
++    // one time in sixteen — no journey, no corridor, nothing to watch.
++    expect(ambulance.route.length).toBeGreaterThan(1);
++    expect(ambulance.route[ambulance.route.length - 1]).toBe(junction);
++  });
++
++  it("prefers a dispatch route that passes a signalised junction", () => {
++    // Regression: priority is requested for junctions *ahead*, so an origin
++    // whose only light is under its own wheels asked for nothing.
++    const e = run(city(), 10);
++    const info = e.triggerCollision()!;
++    const junction = info.segment_id.split("_")[0];
++    const ambulance = e.dispatchAmbulanceTo(junction);
++
++    const reachable = [...e.grid.nodes.keys()]
++      .filter((n) => n !== junction)
++      .some((n) => e.grid.shortestPath(n, junction).slice(1).some((h) => e.trafficLights.has(h)));
++    if (reachable)
++      expect(ambulance.route.slice(1).some((h) => e.trafficLights.has(h))).toBe(true);
++  });
++});
++
++describe("a wreck's sensors", () => {
++  it("still shares what it can see", () => {
++    // Regression: a crashed vehicle returned early from its tick, so it
++    // announced the accident but never shared the pedestrian standing in
++    // front of it — starving collective perception on the one road where a
++    // stopped car is the only thing with a view.
++    const e = run(new SimulationEngine({ seed: 4, gridSize: 4, numRsus: 9, numVehicles: 8, autoHazards: false }), 10);
++    const info = e.triggerCollision()!;
++    const wreck = e.vehicles.get(info.vehicles[0])!;
++    expect(wreck.crashed).toBe(true);
++
++    wreck.seenPedestrians = new Map([[info.segment_id, e.tick]]);
++    const { outbound } = wreck.step(e.tick, true, true);
++    expect(outbound.some((m) => m.type === "cpm")).toBe(true);
++  });
++});
+diff --git a/frontend/src/sim/scenarios.ts b/frontend/src/sim/scenarios.ts
+new file mode 100644
+index 0000000..4f6dd98
+--- /dev/null
++++ b/frontend/src/sim/scenarios.ts
+@@ -0,0 +1,389 @@
++/**
++ * The guided demo's scripted stories.
++ *
++ * A live simulation is honest and, to someone seeing V2X for the first time,
++ * nearly unreadable: things happen everywhere at once and none of it is
++ * labelled. The control centre answers "how well does this perform"; this
++ * answers "what is it actually doing", which is a different question and
++ * needs a different shape.
++ *
++ * So each scenario is a short story with numbered beats. `setup` makes the
++ * event happen; each beat then watches the live state and latches the moment
++ * it becomes true. Nothing here fakes an outcome — a beat that the simulation
++ * does not produce simply never lights up, which is the honest way to show a
++ * system that does not succeed every single time.
++ */
++import type { SimulationEngine } from "./engine";
++import type { SimulationState } from "../types";
++
++/** The state of the world when a scenario started, so beats can say "more
++ *  than before" rather than "more than zero" — the engine has usually been
++ *  running for a while before the viewer picks a story. */
++export interface Baseline {
++  tick: number;
++  collisions: number;
++  denm: number;
++  cpm: number;
++  spatem: number;
++  brakeWarnings: number;
++  shared: number;
++  warnedBlind: number;
++  alertsDelivered: number;
++  sremRequested: number;
++  sremGranted: number;
++  revoked: number;
++  flRounds: number;
++  reroutes: number;
++  rawKbAvoided: number;
++}
++
++const frames = (s: SimulationState, designator: string) =>
++  s.metrics.communication.frames_by_designator[designator] ?? 0;
++
++export function baselineOf(s: SimulationState): Baseline {
++  return {
++    tick: s.tick,
++    collisions: s.collisions.length,
++    denm: frames(s, "DENM"),
++    cpm: frames(s, "CPM"),
++    spatem: frames(s, "SPATEM"),
++    brakeWarnings: s.perception.brake_warnings,
++    shared: s.perception.shared,
++    warnedBlind: s.perception.warned_blind,
++    alertsDelivered: s.alerts.alerts_delivered,
++    sremRequested: s.signal_priority.requested,
++    sremGranted: s.signal_priority.granted,
++    revoked: s.security.pseudonyms.revoked_vehicles,
++    flRounds: s.federated.rounds_completed,
++    reroutes: s.total_reroutes,
++    rawKbAvoided: s.federated.total_raw_kilobytes_avoided,
++  };
++}
++
++export interface Beat {
++  /** Short label, written for someone who has never heard of V2X. */
++  text: string;
++  /** The standards-level detail, for the viewer who wants it. */
++  detail?: string;
++  /**
++   * This one genuinely does not happen on every run — the radio is lossy and
++   * the road layout varies. Marked so a step that stays dark reads as the
++   * system being honest rather than the demo being broken, and so it does not
++   * hold the story back from showing as complete.
++   */
++  optional?: boolean;
++  /** Has this happened yet? Latched by the runtime once true. */
++  done: (s: SimulationState, base: Baseline) => boolean;
++}
++
++export interface Scenario {
++  id: string;
++  icon: string;
++  title: string;
++  /** One sentence, plain language, on what is about to happen. */
++  hook: string;
++  /**
++   * Roughly how many ticks it needs to play out, measured across seeds rather
++   * than guessed. Used only to warn that a story is a long one — progress is
++   * shown against beats completed, because the cascades finish far faster
++   * than a newcomer can read them and a tick bar sitting at 5% would say the
++   * opposite of the truth.
++   */
++  ticks: number;
++  setup: (engine: SimulationEngine) => void;
++  beats: Beat[];
++}
++
++/** Whichever segment the newest collision happened on. */
++const crashSegment = (s: SimulationState, base: Baseline) =>
++  s.collisions.length > base.collisions ? s.collisions[s.collisions.length - 1].segment_id : null;
++
++export const SCENARIOS: Scenario[] = [
++  // ------------------------------------------------------------ collision
++  {
++    id: "collision",
++    icon: "💥",
++    title: "A crash, and everything that follows",
++    hook: "Two cars collide. Watch the warning reach the traffic behind before any driver could possibly see the wreck — then watch an ambulance get a clear run to it.",
++    ticks: 12,
++    setup: (engine) => {
++      const info = engine.triggerCollision();
++      if (info) engine.dispatchAmbulanceTo(info.segment_id.split("_")[0]);
++    },
++    beats: [
++      {
++        text: "Two cars collide and block the lane",
++        detail: "Both vehicles go immobile and the road is marked hazardous.",
++        done: (s, b) => s.collisions.length > b.collisions,
++      },
++      {
++        text: "The wrecks broadcast what happened",
++        detail: "DENM, causeCode 2 (accident), confidence 1.0 — the sender is the accident.",
++        done: (s, b) => frames(s, "DENM") > b.denm && s.vehicles.some((v) => v.crashed),
++      },
++      {
++        text: "Cars behind are told before they can see it",
++        detail: "The frame travels at radio speed; line of sight is irrelevant.",
++        done: (s, b) => s.alerts.alerts_delivered > b.alertsDelivered || s.total_reroutes > b.reroutes,
++      },
++      {
++        text: "Independent witnesses agree — the network believes it",
++        detail: "Corroboration turns one report into a confirmed incident, so a single liar cannot fake one.",
++        done: (s, b) => {
++          const seg = crashSegment(s, b);
++          return !!seg && (s.segments.find((x) => x.id === seg)?.confirmed_incident ?? false);
++        },
++      },
++      {
++        text: "An ambulance is dispatched to the scene",
++        done: (s) => s.vehicles.some((v) => v.kind === "ambulance"),
++      },
++      {
++        text: "Traffic ahead pulls over for it",
++        detail: "A DENM announcing an emergency vehicle, with its predicted path attached.",
++        optional: true,
++        done: (s) => s.vehicles.some((v) => v.yielding),
++      },
++      {
++        text: "Junctions turn green ahead of it",
++        detail:
++          "SREM asks over the air, SSEM answers. Priority is only requested for junctions within the corridor's lookahead, and the ask itself can be lost — so this depends on where the signals fall along the route.",
++        optional: true,
++        done: (s, b) => s.signal_priority.granted > b.sremGranted,
++      },
++    ],
++  },
++
++  // ----------------------------------------------------------- pedestrian
++  {
++    id: "pedestrian",
++    icon: "🚶",
++    title: "Seeing around a corner",
++    hook: "Someone steps onto a crossing. One car can see them; a car turning in from the next street cannot. Watch the blind car slow down anyway.",
++    ticks: 10,
++    setup: (engine) => {
++      engine.spawnPedestrian();
++    },
++    beats: [
++      {
++        text: "A pedestrian steps onto a crossing",
++        done: (s) => s.pedestrians.length > 0,
++      },
++      {
++        text: "The car that can see them brakes hard",
++        detail: "Line of sight is limited to the road being crossed — that limit is the whole point.",
++        done: (s) => s.vehicles.some((v) => v.braking) || s.pedestrians.some((p) => p.seen_by.length > 0),
++      },
++      {
++        text: "It warns the traffic behind it instantly",
++        detail: "DENM causeCode 99 / subCauseCode 1 — emergencyElectronicBrakeEngaged.",
++        done: (s, b) => s.perception.brake_warnings > b.brakeWarnings,
++      },
++      {
++        text: "It shares what its sensors can see",
++        detail: "CPM (ETSI TS 103 324). The frame grows 35 bytes per object — this is a bandwidth trade, not a free win.",
++        done: (s, b) => s.perception.shared > b.shared,
++      },
++      {
++        text: "A car with no line of sight slows for them too",
++        detail: "It has never seen the pedestrian. Without the radio it would arrive at the corner at full speed.",
++        done: (s, b) => s.perception.warned_blind > b.warnedBlind || s.pedestrians.some((p) => p.known_by.length > 0),
++      },
++    ],
++  },
++
++  // --------------------------------------------------------- traffic light
++  {
++    id: "glosa",
++    icon: "🚦",
++    title: "Arriving on green",
++    hook: "Junctions broadcast what their lights are about to do. A car that hears “red” ahead eases off early and rolls through instead of racing up and stopping.",
++    ticks: 26,
++    setup: () => {
++      // Nothing to stage: signals broadcast on their own duty cycle. This
++      // scenario is about noticing something already happening.
++    },
++    beats: [
++      {
++        text: "A junction broadcasts its signal phase",
++        detail: "SPaT (ETSI TS 103 301), sent by the roadside unit at the junction.",
++        done: (s, b) => frames(s, "SPATEM") > b.spatem,
++      },
++      {
++        text: "Approaching cars actually receive it",
++        detail: "Transmitting is not delivering — only vehicles that decoded the frame know the phase.",
++        done: (s, b) => frames(s, "SPATEM") > b.spatem + 2,
++      },
++      {
++        text: "A car hears “red” on the junction it is approaching",
++        done: (s) => s.traffic_lights.some((l) => l.phase === "red"),
++      },
++      {
++        text: "It holds a slower speed instead of braking late",
++        detail: "The advice is never faster than carrying on, and a phase heard long ago is discarded as stale.",
++        done: (s) => s.perception.glosa_active > 0,
++      },
++    ],
++  },
++
++  // ------------------------------------------------------------- attacker
++  {
++    id: "attacker",
++    icon: "😈",
++    title: "A liar joins the network",
++    hook: "A vehicle starts reporting crashes on roads that are perfectly clear. Watch the network work out that it cannot be believed — without any central authority telling it so. This one is deliberately the slowest story here.",
++    ticks: 240,
++    setup: (engine) => {
++      engine.spawnVehicle("malicious");
++      engine.spawnVehicle("malicious");
++    },
++    beats: [
++      {
++        text: "An attacker joins and starts lying",
++        done: (s) => s.vehicles.some((v) => v.kind === "malicious"),
++      },
++      {
++        text: "It reports hazards on roads that are clear",
++        done: (s, b) => frames(s, "DENM") > b.denm,
++      },
++      {
++        text: "No independent witness backs it up",
++        detail: "A report is only believed when vehicles that could actually have seen it agree.",
++        done: (s) =>
++          Object.entries(s.trust).some(
++            ([id, t]) =>
++              id.startsWith("malicious") && t.reports_seen > 2 && t.reports_corroborated < t.reports_seen,
++          ),
++      },
++      {
++        text: "Its trust score starts falling",
++        detail: "An exponential moving average over how often its reports are corroborated.",
++        done: (s) =>
++          Object.entries(s.trust).some(([id, t]) => id.startsWith("malicious") && t.trust_score < 0.6),
++      },
++      {
++        text: "It drops below the threshold for being believed",
++        detail: "Its reports now carry almost no weight in what the network concludes, or in what the models train on.",
++        optional: true,
++        done: (s) =>
++          Object.entries(s.trust).some(([id, t]) => id.startsWith("malicious") && t.trust_score < 0.25),
++      },
++      {
++        text: "Its certificate is revoked and it is ignored entirely",
++        detail:
++          "Needs at least 10 reports AND trust below 0.12, so it takes a few minutes of simulated time. That slowness is deliberate: wrongly revoking an honest vehicle is worse than tolerating a liar for a while, and nothing here lets an operator revoke by decree.",
++        optional: true,
++        done: (s, b) => s.security.pseudonyms.revoked_vehicles > b.revoked,
++      },
++    ],
++  },
++
++  // --------------------------------------------------------- cloud outage
++  {
++    id: "outage",
++    icon: "📵",
++    title: "The cloud goes down",
++    hook: "The whole point of pushing intelligence to the roadside: cut the connection to the data centre and the safety system keeps working.",
++    ticks: 8,
++    setup: (engine) => {
++      engine.setCloudOnline(false);
++    },
++    beats: [
++      {
++        text: "The uplink to the data centre is severed",
++        done: (s) => !s.cloud_online,
++      },
++      {
++        text: "Vehicles keep talking directly to each other",
++        detail: "CAM and DENM ride the sidelink radio, which never touched the cloud.",
++        done: (s, b) => frames(s, "DENM") + frames(s, "CAM") > b.denm + 1,
++      },
++      {
++        text: "Roadside units keep predicting congestion on their own",
++        done: (s) => s.rsus.some((r) => r.alive && Object.keys(r.predictions).length > 0),
++      },
++      {
++        text: "Safety messaging stays up",
++        detail: "On the centralized baseline this is where the service goes dark — switch architecture on the control centre to see that.",
++        done: (s) => s.metrics.resilience.availability_during_outage_pct > 0,
++      },
++    ],
++  },
++
++  // ---------------------------------------------------- federated learning
++  {
++    id: "federated",
++    icon: "🧠",
++    title: "The city learns without sharing its data",
++    hook: "Each roadside unit trains on what it sees. Only the trained weights are uploaded, never the raw traffic — so the model improves and the data never leaves the street.",
++    ticks: 24,
++    setup: () => {
++      // Federated rounds run on their own schedule; this scenario surfaces
++      // something continuous rather than triggering an event.
++    },
++    beats: [
++      {
++        text: "Each roadside unit trains on its own local traffic",
++        done: (s) => s.rsus.some((r) => r.fl.pending_samples > 0 || r.fl.samples_contributed > 0),
++      },
++      {
++        text: "Only model weights are uploaded — never raw data",
++        detail: "Weights are a few kilobytes; the observations behind them would be hundreds.",
++        done: (s, b) => s.federated.rounds_completed > b.flRounds,
++      },
++      {
++        text: "The weights are averaged into one shared model",
++        detail: "Weighted by how much data each unit had, and by how much its data is trusted.",
++        done: (s, b) => s.federated.rounds_completed > b.flRounds,
++      },
++      {
++        text: "The shared model predicts better than it started",
++        done: (s) => s.federated.loss_reduction_pct > 0,
++      },
++      {
++        text: "Raw telemetry that never had to be transmitted",
++        detail: "This is the privacy and bandwidth argument, measured rather than asserted.",
++        done: (s, b) => s.federated.total_raw_kilobytes_avoided > b.rawKbAvoided,
++      },
++    ],
++  },
++];
++
++export const SCENARIOS_BY_ID = new Map(SCENARIOS.map((s) => [s.id, s]));
++
++/** "Everything at once" — the whole city doing all of it together. */
++export const EVERYTHING: Scenario = {
++  id: "everything",
++  icon: "🌆",
++  title: "Everything at once",
++  hook: "A crash, a pedestrian, a liar and a cloud outage, all in the same city at the same time. This is what the numbers on the control centre are actually made of.",
++  ticks: 80,
++  setup: (engine) => {
++    const info = engine.triggerCollision();
++    if (info) engine.dispatchAmbulanceTo(info.segment_id.split("_")[0]);
++    engine.spawnPedestrian();
++    engine.spawnVehicle("malicious");
++  },
++  beats: [
++    { text: "Two cars collide", done: (s, b) => s.collisions.length > b.collisions },
++    { text: "A pedestrian is shared by radio", done: (s, b) => s.perception.shared > b.shared },
++    {
++      text: "A car is warned about someone it cannot see",
++      done: (s, b) => s.perception.warned_blind > b.warnedBlind,
++    },
++    { text: "The incident is corroborated and confirmed", done: (s) => s.segments.some((x) => x.confirmed_incident) },
++    {
++      text: "An ambulance gets priority at a junction",
++      optional: true,
++      done: (s, b) => s.signal_priority.granted > b.sremGranted,
++    },
++    { text: "A car holds a speed to catch a green light", done: (s) => s.perception.glosa_active > 0 },
++    {
++      text: "The attacker's trust falls",
++      done: (s) => Object.entries(s.trust).some(([id, t]) => id.startsWith("malicious") && t.trust_score < 0.7),
++    },
++    { text: "The roadside units complete a learning round", done: (s, b) => s.federated.rounds_completed > b.flRounds },
++  ],
++};
++
++export const ALL_SCENARIOS = [...SCENARIOS, EVERYTHING];
+diff --git a/frontend/src/styles.css b/frontend/src/styles.css
+index f4c207c..01d57fa 100644
+--- a/frontend/src/styles.css
++++ b/frontend/src/styles.css
+@@ -730,3 +730,159 @@ button.danger { background: #2c1414; border-color: #5e2525; color: #f3a8a8; }
+ .page-head { flex-wrap: wrap; }
+ .arch-switch { flex-wrap: wrap; max-width: 100%; }
+ .arch-switch select { max-width: 100%; }
++
++/* =====================================================================
++   Guided demo — the story-led view for an audience
++   ===================================================================== */
++.scenario-picker {
++  display: grid;
++  grid-template-columns: repeat(auto-fit, minmax(155px, 1fr));
++  gap: 10px;
++}
++.scenario-card {
++  display: flex;
++  flex-direction: column;
++  align-items: flex-start;
++  gap: 7px;
++  text-align: left;
++  padding: 13px 14px;
++  border-radius: 11px;
++  border: 1px solid var(--line);
++  background: var(--surface);
++  cursor: pointer;
++  transition: border-color .12s ease, background .12s ease;
++}
++.scenario-card:hover { border-color: var(--accent); background: var(--surface-2); }
++.scenario-card.active {
++  border-color: var(--accent);
++  background: #13243a;
++  box-shadow: inset 0 0 0 1px var(--accent);
++}
++.scenario-icon { font-size: 22px; line-height: 1; }
++.scenario-title { font-size: 13px; font-weight: 600; line-height: 1.35; color: var(--text); }
++
++.guided-body {
++  display: grid;
++  grid-template-columns: minmax(0, 1fr) 370px;
++  gap: 16px;
++  align-items: start;
++}
++@media (max-width: 980px) {
++  .guided-body { grid-template-columns: 1fr; }
++}
++
++.guided-map-panel { padding: 16px; }
++/* The street map is capped narrow for the sandbox page. Here it is the
++   thing the room is looking at, so let it have the width. */
++.guided-map .street-map { max-width: 100%; }
++
++.story-hook {
++  background: var(--surface-2);
++  border: 1px solid var(--line);
++  border-left: 3px solid var(--accent);
++  border-radius: 9px;
++  padding: 11px 14px;
++  margin-bottom: 14px;
++}
++.story-hook strong { font-size: 14px; }
++.story-hook p { margin: 5px 0 0; font-size: 13px; color: var(--text-2); line-height: 1.5; }
++
++.guided-transport {
++  display: flex;
++  flex-wrap: wrap;
++  align-items: center;
++  gap: 8px 12px;
++  margin-top: 14px;
++  padding-top: 14px;
++  border-top: 1px solid var(--line);
++}
++.guided-transport .transport-speed { margin-left: auto; }
++
++/* ------------------------------------------------------- the checklist */
++.story-panel h2 { display: flex; align-items: center; gap: 9px; }
++.story-count {
++  margin-left: auto;
++  font-size: 12px;
++  font-variant-numeric: tabular-nums;
++  color: var(--text-2);
++  background: var(--surface-2);
++  border: 1px solid var(--line);
++  border-radius: 20px;
++  padding: 1px 9px;
++}
++.story-progress { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
++.story-bar { flex: 1; height: 5px; border-radius: 3px; background: var(--surface-2); overflow: hidden; }
++.story-fill { height: 100%; background: var(--accent); transition: width .25s ease; }
++
++.beats { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 9px; }
++.beat { display: flex; gap: 10px; align-items: flex-start; }
++.beat-mark {
++  flex: none;
++  width: 21px;
++  height: 21px;
++  border-radius: 50%;
++  border: 1px solid var(--line);
++  background: var(--surface-2);
++  color: var(--muted);
++  font-size: 11px;
++  font-weight: 700;
++  display: flex;
++  align-items: center;
++  justify-content: center;
++  margin-top: 1px;
++}
++.beat.done .beat-mark { background: var(--good); border-color: var(--good); color: #04150e; }
++.beat-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
++.beat-text { font-size: 13px; line-height: 1.45; color: var(--text-2); }
++.beat.done .beat-text { color: var(--text); }
++.beat-tick { font-size: 11px; color: var(--good); font-variant-numeric: tabular-nums; }
++.beat-detail {
++  font-size: 11.5px;
++  color: var(--muted);
++  line-height: 1.5;
++  border-left: 2px solid var(--line);
++  padding-left: 8px;
++  margin-top: 3px;
++}
++.story-done {
++  margin: 12px 0 0;
++  font-size: 13px;
++  color: var(--good);
++  line-height: 1.5;
++}
++
++/* ------------------------------------------------------- key numbers */
++.key-numbers .key-row {
++  display: flex;
++  gap: 12px;
++  align-items: baseline;
++  padding: 9px 0;
++  border-top: 1px solid var(--line);
++}
++.key-numbers .key-row:first-of-type { border-top: none; }
++.key-value {
++  font-size: 1.3rem;
++  font-weight: 700;
++  font-variant-numeric: tabular-nums;
++  min-width: 54px;
++  flex: none;
++}
++.key-body { display: flex; flex-direction: column; min-width: 0; }
++.key-label { font-size: 13px; line-height: 1.35; }
++.key-note { font-size: 11.5px; color: var(--muted); line-height: 1.45; margin-top: 2px; }
++
++.key-crash {
++  width: 11px;
++  height: 11px;
++  border-radius: 50%;
++  border: 2px solid #ff5a5a;
++  background: #8b6b6b;
++  flex: none;
++}
++.beat.optional .beat-mark { border-style: dashed; opacity: 0.7; }
++.beat-maybe {
++  font-size: 11px;
++  color: var(--muted);
++  font-style: italic;
++}
++.story-slow { margin: 10px 0 0; }
+diff --git a/frontend/src/types.ts b/frontend/src/types.ts
+index 208696d..b0f4818 100644
+--- a/frontend/src/types.ts
++++ b/frontend/src/types.ts
+@@ -25,6 +25,16 @@ export interface VehicleState {
+   braking?: boolean;
+   /** km/h a red light ahead makes it worth holding, or null for carry on. */
+   glosa_advice?: number | null;
++  /** Wrecked and immobile, blocking its lane and announcing the accident. */
++  crashed?: boolean;
++  crashed_ticks?: number;
++}
++
++/** A collision that actually happened, newest last. */
++export interface CollisionState {
++  tick: number;
++  segment_id: string;
++  vehicles: string[];
+ }
+ 
+ /** A vulnerable road user on a crossing (ETSI TS 103 324 perceived object). */
+@@ -265,6 +275,7 @@ export interface SimulationState {
+   metrics: MetricsSummary;
+   active_corridors: string[];
+   pedestrians: PedestrianState[];
++  collisions: CollisionState[];
+   /** What the three Porsche prototypes actually achieved this run. */
+   perception: {
+     /** CPMs put on the air. */
+-- 
+2.43.0
+

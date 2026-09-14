@@ -1,0 +1,73 @@
+# Publish the site to GitHub Pages on every push to main.
+#
+# The simulation runs entirely in the browser, so the whole product is a
+# static bundle and needs no server — which is what makes free static hosting
+# the right home for it rather than a platform that expects a backend.
+#
+# Two build settings matter and both are about where the site lives:
+#
+#   VITE_BASE=/<repo>/  because a project page is served from a sub-path, not
+#                       a domain root, so asset URLs have to carry the prefix.
+#   VITE_ROUTER=hash    because Pages serves static files with no rewrite
+#                       rules, so a deep link like /demo would 404 on reload.
+#                       Hash routing keeps /#/demo working on a fresh load,
+#                       a refresh, and a link someone pastes to a colleague.
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  # So the first deployment can be triggered without waiting for a commit.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Let a running deployment finish rather than cancelling it half-way.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+
+      # The site is the deliverable, so it should not ship if the engine it
+      # runs on is broken.
+      - run: npx tsc -b --noEmit
+      - run: npx vitest run
+
+      - name: Build
+        env:
+          VITE_BASE: /${{ github.event.repository.name }}/
+          VITE_ROUTER: hash
+        run: npm run build
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: frontend/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

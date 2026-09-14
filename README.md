@@ -164,6 +164,30 @@ reachable from the **Guided demo** and **Street view** pages in one click:
   never faster than carrying on, and a phase heard about too long ago is
   discarded rather than acted on.
 
+## Hosting it publicly
+
+The simulation runs entirely in the browser, so the whole product is a static
+bundle with no server to deploy. `.github/workflows/pages.yml` builds it and
+publishes to GitHub Pages on every push to `main`.
+
+**One-time setup:** in the repository, go to **Settings → Pages** and set
+**Source** to **GitHub Actions**. The next push publishes to
+`https://<user>.github.io/v2x-ecosystem/` — a public URL that needs no login.
+The workflow can also be started by hand from the **Actions** tab
+(*Pages → Run workflow*) without waiting for a commit.
+
+Two build settings in that workflow are load-bearing, and both are about the
+site living at a sub-path rather than a domain root:
+
+- `VITE_BASE=/v2x-ecosystem/` so asset URLs carry the repository prefix.
+- `VITE_ROUTER=hash` because Pages serves static files with no rewrite rules.
+  Without it a deep link like `/demo` returns 404 on reload; with it,
+  `/#/demo` survives a fresh load, a refresh, and being pasted to someone
+  else.
+
+The workflow typechecks and runs the test suite before it builds, so a broken
+engine does not get published.
+
 ## Running it
 
 Requires Python 3.11+ and Node 18+.
