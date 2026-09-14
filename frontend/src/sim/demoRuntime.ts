@@ -155,9 +155,17 @@ export function useDemo() {
       force((n) => n + 1);
     };
     listeners.add(listener);
+    // Resume where the user left it: navigating to another tab and back
+    // should not lose a running scene, but nor should it have run on without
+    // them while nobody was looking.
+    if (playing) startTimer();
     listener(engine.stateSnapshot());
+
     return () => {
       listeners.delete(listener);
+      // Nobody is watching: stop burning CPU on a scene no one can see.
+      // `playing` is deliberately left set so remounting picks it back up.
+      if (listeners.size === 0) clearTimer();
     };
   }, []);
 

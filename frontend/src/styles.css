@@ -660,3 +660,9 @@ button.danger { background: #2c1414; border-color: #5e2525; color: #f3a8a8; }
   max-width: min(100%, 620px);
   margin: 0 auto;
 }
+
+/* The architecture picker pushed the page sideways at phone width: the head
+   was a non-wrapping row and the select had no ceiling. */
+.page-head { flex-wrap: wrap; }
+.arch-switch { flex-wrap: wrap; max-width: 100%; }
+.arch-switch select { max-width: 100%; }

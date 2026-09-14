@@ -64,6 +64,10 @@ export function StreetMap({
   const stationXY = (id: string): [number, number] | null => {
     const rsu = state.rsus.find((r) => r.id === id);
     if (rsu) return nodeXY(rsu.node);
+    // Traffic lights transmit SPaT and SSEM under "light-<node>". Without
+    // this they resolved to nothing and those frames were silently dropped
+    // from the drawing — while the legend promised to show them.
+    if (id.startsWith("light-")) return nodeXY(id.slice("light-".length));
     return vehicleXY(id);
   };
 

@@ -21,6 +21,7 @@ import {
 } from "./core";
 import { separated, summarize, tMultiplier } from "./stats";
 import { SCENARIOS, aggregateRuns, runExperiment, runSuite } from "./experiments";
+import { SimulationEngine } from "./engine";
 
 const cam = (over: Partial<Parameters<typeof makeMessage>[0]> = {}) =>
   makeMessage({
@@ -222,5 +223,70 @@ describe("experiment suite", () => {
     expect(agg.uplink_kilobytes_per_tick.n).toBe(2);
     expect(agg).toHaveProperty("f1");
     expect(agg).toHaveProperty("availability_during_outage_pct");
+  });
+});
+
+// ------------------------------------------------- the street-level view
+describe("transmission log", () => {
+  const run = (ticks: number, seed = 5) => {
+    const e = new SimulationEngine({
+      gridSize: 4,
+      numRsus: 4,
+      numVehicles: 6,
+      seed,
+      autoHazards: false,
+      inferenceInterval: 2,
+    });
+    e.spawnVehicle("ambulance");
+    e.injectHazard();
+    for (let i = 0; i < ticks; i++) e.step();
+    return e;
+  };
+
+  it("records who transmitted and who decoded it", () => {
+    const frames = run(60).stateSnapshot().transmissions;
+    expect(frames.length).toBeGreaterThan(0);
+    for (const f of frames) {
+      expect(f.sender_id).toBeTruthy();
+      expect(Array.isArray(f.delivered_to)).toBe(true);
+      expect(f.delivered_to.length).toBeLessThanOrEqual(f.intended);
+    }
+  });
+
+  it("stays bounded — it ships inside every snapshot", () => {
+    expect(run(400).stateSnapshot().transmissions.length).toBeLessThanOrEqual(60);
+  });
+
+  it("never names a receiver that does not exist", () => {
+    const e = run(80);
+    const state = e.stateSnapshot();
+    const known = new Set([
+      ...state.vehicles.map((v) => v.id),
+      ...state.rsus.map((r) => r.id),
+    ]);
+    for (const f of state.transmissions)
+      for (const rx of f.delivered_to) expect(known.has(rx)).toBe(true);
+  });
+
+  it("only ever names senders the map can place", () => {
+    // Regression: traffic lights transmit SPaT and SSEM under "light-<node>".
+    // The street map could not resolve that id, so those frames were silently
+    // dropped from the drawing while the legend promised to show them.
+    const e = run(80);
+    const state = e.stateSnapshot();
+    const vehicles = new Set(state.vehicles.map((v) => v.id));
+    const rsus = new Set(state.rsus.map((r) => r.id));
+    const lights = new Set(state.traffic_lights.map((l) => `light-${l.node}`));
+
+    for (const f of state.transmissions) {
+      const locatable = vehicles.has(f.sender_id) || rsus.has(f.sender_id) || lights.has(f.sender_id);
+      expect(locatable, `${f.designator} sent by unlocatable ${f.sender_id}`).toBe(true);
+    }
+  });
+
+  it("carries the signal frames the street view colours separately", () => {
+    const designators = new Set(run(120).stateSnapshot().transmissions.map((f) => f.designator));
+    // SPaT goes out on a duty cycle regardless of what else is happening.
+    expect(designators.has("SPATEM")).toBe(true);
   });
 });

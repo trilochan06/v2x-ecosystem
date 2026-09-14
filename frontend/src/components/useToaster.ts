@@ -9,6 +9,9 @@ export interface Toast {
 }
 
 const VISIBLE_MS = 4200;
+/** Rapid clicking should not bury the map under a column of toasts. Older
+ *  ones drop off; each still names what happened while it is up. */
+const MAX_VISIBLE = 3;
 
 /**
  * Confirmation that a control did something.
@@ -30,7 +33,7 @@ export function useToaster() {
 
   const push = useCallback((message: string, tone: ToastTone = "info") => {
     const id = nextId.current++;
-    setToasts((current) => [...current, { id, message, tone }]);
+    setToasts((current) => [...current, { id, message, tone }].slice(-MAX_VISIBLE));
     timers.current.push(
       window.setTimeout(
         () => setToasts((current) => current.filter((t) => t.id !== id)),

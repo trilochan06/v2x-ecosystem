@@ -21,11 +21,17 @@ function publish() {
 }
 
 function ensureTicking() {
-  if (timer !== undefined) return;
+  if (timer !== undefined || listeners.size === 0) return;
   timer = window.setInterval(() => {
     engine.step();
     publish();
   }, TICK_INTERVAL_MS);
+}
+
+/** Stop the clock when no page is displaying this engine. */
+function stopTicking() {
+  if (timer !== undefined) window.clearInterval(timer);
+  timer = undefined;
 }
 
 export function getEngine() {
@@ -52,6 +58,10 @@ export function useSimulation() {
     listener(engine.stateSnapshot()); // paint immediately, don't wait a tick
     return () => {
       listeners.delete(listener);
+      // The city is only "live" while someone is looking at it. Ticking an
+      // unobserved engine is pure waste, and with the street-view engine also
+      // running it was two of them.
+      if (listeners.size === 0) stopTicking();
     };
   }, []);
 
