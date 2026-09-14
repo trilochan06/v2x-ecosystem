@@ -30,6 +30,8 @@ const FRAME_COLOR: Record<string, string> = {
   SPATEM: "#199e70",
   SREM: "#c084fc",
   SSEM: "#c084fc",
+  /** Collective perception — "here is someone you cannot see". */
+  CPM: "#f0b429",
 };
 
 interface Props {
@@ -285,6 +287,13 @@ export function StreetMap({
                 underneath it. */}
             <circle r={14} fill="transparent" />
             {v.yielding && <circle r={20} fill="#f0b429" opacity={0.22} />}
+            {/* Braking hard right now — the frame telling the traffic behind
+                is on the air this very tick. */}
+            {v.braking && <circle r={17} fill="none" stroke="#ff5a5a" strokeWidth={3} opacity={0.9} />}
+            {/* Holding an advisory speed for a red light ahead. */}
+            {v.glosa_advice != null && (
+              <circle r={22} fill="none" stroke="#199e70" strokeWidth={2} strokeDasharray="4 5" opacity={0.8} />
+            )}
             {selected && <circle r={19} fill="none" stroke="#fff" strokeWidth={2} opacity={0.85} />}
             <g transform={`rotate(${angle})`}>
               {/* A wedge, so heading is readable at a glance. */}
@@ -301,12 +310,66 @@ export function StreetMap({
             </text>
             <title>
               {v.id} · {v.kind} · heading {v.next_node ?? "—"} · trust {v.trust_hint.toFixed(2)}
+              {v.braking ? " · braking hard" : ""}
+              {v.glosa_advice != null ? ` · holding ${Math.round(v.glosa_advice)} km/h for a red` : ""}
+            </title>
+          </g>
+        );
+      })}
+
+      {/* ----------------------------------------------------- pedestrians */}
+      {/* Drawn last so they sit on top of the traffic. The two rings are the
+          whole point of collective perception: the solid one is who can see
+          them, the dashed one is who only knows because a peer said so. */}
+      {(state.pedestrians ?? []).map((ped) => {
+        const [x, y] = crossingXY(ped.segment_id, ped.node, nodeXY);
+        return (
+          <g key={ped.id} transform={`translate(${x} ${y})`}>
+            <circle r={15} fill="#f0b429" opacity={0.16} className="incident-pulse" />
+            {ped.known_by.length > 0 && (
+              <circle r={19} fill="none" stroke="#f0b429" strokeWidth={1.6} strokeDasharray="3 4" opacity={0.9} />
+            )}
+            {/* A stick figure reads as a person at this size; a dot does not. */}
+            <g stroke="#f7f3e8" strokeWidth={1.8} strokeLinecap="round" fill="none">
+              <circle cx={0} cy={-6} r={2.6} fill="#f7f3e8" stroke="none" />
+              <line x1={0} y1={-3.5} x2={0} y2={2.5} />
+              <line x1={-3.5} y1={-1} x2={3.5} y2={-1} />
+              <line x1={0} y1={2.5} x2={-3} y2={7} />
+              <line x1={0} y1={2.5} x2={3} y2={7} />
+            </g>
+            <title>
+              Pedestrian crossing {road(ped.segment_id)} · {ped.seen_by.length} can see them,{" "}
+              {ped.known_by.length} were told by radio · {ped.ticks_remaining} ticks left
             </title>
           </g>
         );
       })}
     </svg>
   );
+}
+
+/**
+ * Where on the map a pedestrian stands.
+ *
+ * They cross `segment_id` at `node`, so put them a short way along that road
+ * rather than in the middle of the junction — otherwise they sit under the
+ * roadside unit box and cannot be seen at all.
+ */
+function crossingXY(
+  segmentId: string,
+  node: string,
+  nodeXY: (n: string) => [number, number],
+): [number, number] {
+  const [a, b] = segmentId.split("_");
+  const far = a === node ? b : a;
+  const [nx, ny] = nodeXY(node);
+  const [fx, fy] = nodeXY(far);
+  const t = 0.28;
+  return [nx + (fx - nx) * t, ny + (fy - ny) * t];
+}
+
+function road(segmentId: string): string {
+  return segmentId.replace("_", " → ");
 }
 
 /** "car-12" → "C12", "ambulance-3" → "A3". Short enough to sit over a car. */

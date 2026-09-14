@@ -19,6 +19,7 @@ import {
   HAZARD_TYPES,
   MESSAGE_SPECS,
   Message,
+  Pedestrian,
   SIGNAL_REQUEST_STATUS,
   Rng,
   backhaulBytes,
@@ -47,6 +48,8 @@ const SPAT_BROADCAST_INTERVAL_TICKS = 4;
 const SIGNAL_REQUEST_TTL_HOPS = 2;
 /** How many recent frames the street-level view can replay. */
 const TRANSMISSION_LOG_LIMIT = 60;
+/** How long a pedestrian stays on the crossing. */
+const PEDESTRIAN_CROSSING_TICKS = 10;
 
 export class MetricsCollector {
   packetsIntended = 0;
@@ -281,6 +284,12 @@ export class SimulationEngine {
   rsus = new Map<string, RSU>();
   fogNodes = new Map<string, FogNode>();
   trafficLights = new Map<string, TrafficLight>();
+  /** Vulnerable road users currently on a crossing. */
+  pedestrians = new Map<string, Pedestrian>();
+  /** How often collective perception and the brake light actually did
+   *  something. `warnedBlind` is the one that matters: a vehicle acted on a
+   *  pedestrian it could not itself see. */
+  perceptionStats = { shared: 0, warnedBlind: 0, brakeWarnings: 0 };
   metrics = new MetricsCollector();
   federation = new FederatedCoordinator();
   trust = new TrustRegistry();
@@ -307,6 +316,7 @@ export class SimulationEngine {
   private rng: Rng;
   private bus: EtherBus;
   private vehicleCounter = 1;
+  private pedestrianCounter = 1;
   private cloudInbox: { due: number; senderId: string; msg: Message }[] = [];
   private messagesThisTick = 0;
   private bytesThisTick = 0;
@@ -384,6 +394,64 @@ export class SimulationEngine {
     return v;
   }
 
+  /**
+   * Put a pedestrian on a crossing at `node`.
+   *
+   * Chooses an intersection that has traffic on at least one approach, because
+   * a pedestrian nobody is driving towards demonstrates nothing: nobody can
+   * see them, so nobody shares them and nobody brakes.
+   */
+  spawnPedestrian(node?: string): string | null {
+    if (!node) {
+      const busy = [...this.grid.nodes.keys()].filter((n) =>
+        [...this.vehicles.values()].some((v) => v.nextNode === n || v.node === n),
+      );
+      node = this.rng.pick(busy.length ? busy : [...this.grid.nodes.keys()]);
+    }
+    const neighbours = this.grid.neighbors(node);
+    if (!neighbours.length) return null;
+
+    const candidates = neighbours.map((n) => this.grid.segmentBetween(node!, n));
+    const occupied = candidates.filter((seg) =>
+      [...this.vehicles.values()].some((v) => v.currentSegmentId === seg.id),
+    );
+    const crossing = this.rng.pick(occupied.length ? occupied : candidates);
+
+    const pid = `ped-${this.pedestrianCounter++}`;
+    this.pedestrians.set(pid, new Pedestrian(pid, node, crossing.id, PEDESTRIAN_CROSSING_TICKS, this.tick));
+    this.log("pedestrian", `Pedestrian stepped onto the crossing at ${node}.`);
+    return pid;
+  }
+
+  /**
+   * Take a car off the road.
+   *
+   * Density is something the viewer needs to be able to dial: a map with
+   * twenty-six dots on it measures well and reads badly. Ordinary cars go
+   * first — removing the ambulance somebody just dispatched, or the attacker
+   * they are watching, would be its own kind of confusing.
+   */
+  despawnVehicle(): string | null {
+    const ordinary = [...this.vehicles.values()].filter((v) => v.kind === "car");
+    const pool = ordinary.length ? ordinary : [...this.vehicles.values()];
+    const victim = pool[pool.length - 1];
+    if (!victim) return null;
+    this.vehicles.delete(victim.id);
+    // Otherwise the RSU it was homed to keeps counting it as served.
+    this.rsuNetwork.vehicleCell.delete(victim.id);
+    return victim.id;
+  }
+
+  /** Add or remove ordinary cars until the city holds `target` vehicles. */
+  setVehicleCount(target: number) {
+    const wanted = Math.max(1, Math.round(target));
+    while (this.vehicles.size < wanted) this.spawnVehicle("car");
+    while (this.vehicles.size > wanted && this.despawnVehicle()) {
+      /* despawnVehicle returns null when there is nothing left to remove */
+    }
+    this.log("density", `Traffic set to ${this.vehicles.size} vehicles.`);
+  }
+
   toggleRsu(rsuId: string, alive: boolean) {
     const rsu = this.rsus.get(rsuId);
     if (!rsu) return;
@@ -449,6 +517,7 @@ export class SimulationEngine {
     this.processReports(serviceUp);
     this.runEdgeAndLearning();
     this.runInfrastructure(serviceUp);
+    this.pedestrianLifecycle();
     this.hazardLifecycle();
 
     this.metrics.sampleSegments(this.grid.allSegments().map((s) => s.occupancy));
@@ -526,6 +595,7 @@ export class SimulationEngine {
       this.bytesThisTick += bytes;
       this.metrics.recordBroadcast(intended, delivered.length, bytes, MESSAGE_SPECS[msg.type].designator);
       this.recordTransmission(msg, vehicle.node, delivered, intended);
+      if (msg.type === "cpm") this.perceptionStats.shared += 1;
 
       for (const nodeIdent of delivered) {
         if (!this.admit(nodeIdent, msg)) {
@@ -546,6 +616,23 @@ export class SimulationEngine {
           this.vehicles
             .get(nodeIdent)
             ?.receiveOccupancyPing(String(msg.payload.segment_id), Number(msg.payload.occupancy), this.tick);
+        } else if (msg.type === "cpm") {
+          // A peer's sensors saw a road user. The receiver now knows about
+          // someone it may have no way of seeing itself.
+          const peer = this.vehicles.get(nodeIdent);
+          if (peer) {
+            const segmentId = String(msg.payload.segment_id);
+            const blind = !peer.knowsPedestrianOn(segmentId, this.tick);
+            peer.receivePerceivedObject(segmentId, this.tick);
+            if (blind && peer.pedestrianKnownOnlyFromPeers(segmentId, this.tick))
+              this.perceptionStats.warnedBlind += 1;
+          }
+        } else if (msg.type === "denm-eebl") {
+          const peer = this.vehicles.get(nodeIdent);
+          if (peer) {
+            peer.receiveHazardWarning(String(msg.payload.segment_id), this.tick);
+            this.perceptionStats.brakeWarnings += 1;
+          }
         }
       }
     }
@@ -778,7 +865,7 @@ export class SimulationEngine {
       const rsuId = this.rsuAt.get(light.node);
       // The roadside radio is what transmits it. No radio, no SPaT.
       if (!rsuId || !this.rsus.get(rsuId)?.alive) continue;
-      this.putOnAir(
+      const delivered = this.putOnAir(
         makeMessage({
           type: "spatem",
           senderId: light.id,
@@ -791,6 +878,10 @@ export class SimulationEngine {
         light.node,
         recipients,
       );
+      // Transmitting is not delivering: hand the phase to every vehicle that
+      // actually decoded the frame, or GLOSA has nothing to act on.
+      for (const receiver of delivered)
+        this.vehicles.get(receiver)?.receiveSignalPhase(light.node, light.phase, this.tick);
     }
   }
 
@@ -876,6 +967,45 @@ export class SimulationEngine {
     return scores.reduce((a, b) => a + b, 0) / scores.length;
   }
 
+  /**
+   * Age pedestrians off the crossing, then work out who can see them.
+   *
+   * Line of sight is the whole mechanic. A vehicle travelling *along* the
+   * segment being crossed has a clear view down the road. A vehicle about to
+   * turn into that crossing from a perpendicular street does not — the corner
+   * is in the way. That asymmetry is what makes collective perception worth
+   * the bandwidth, and it is the turning case from the Porsche prototypes.
+   */
+  private pedestrianLifecycle() {
+    for (const [pid, ped] of [...this.pedestrians]) {
+      ped.step();
+      if (!ped.active) this.pedestrians.delete(pid);
+    }
+
+    for (const vehicle of this.vehicles.values()) {
+      vehicle.seenPedestrians = new Map(
+        [...this.pedestrians.values()]
+          .filter((ped) => this.hasLineOfSight(vehicle, ped))
+          .map((ped) => [ped.segmentId, this.tick] as const),
+      );
+      // Anyone who can see a pedestrian in their own path brakes for them,
+      // which is what generates the emergency brake warning.
+      const here = vehicle.currentSegmentId;
+      if (here && vehicle.seenPedestrians.has(here)) vehicle.brakeHard();
+    }
+  }
+
+  /**
+   * Can this vehicle physically see this pedestrian?
+   *
+   * Only from on the crossing segment itself. Approaching the same
+   * intersection down a different street does not count — that vehicle is
+   * turning blind.
+   */
+  hasLineOfSight(vehicle: Vehicle, ped: Pedestrian): boolean {
+    return vehicle.currentSegmentId === ped.segmentId;
+  }
+
   private hazardLifecycle() {
     if (this.autoHazards && this.rng.next() < HAZARD_SPAWN_PROBABILITY) this.injectHazard();
     for (const seg of this.grid.allSegments()) {
@@ -931,6 +1061,26 @@ export class SimulationEngine {
       alerts: this.alerts.snapshot(),
       metrics: this.metrics.summary(),
       active_corridors: [...this.corridor.activeCorridors],
+      pedestrians: [...this.pedestrians.values()].map((ped) => ({
+        id: ped.id,
+        node: ped.node,
+        segment_id: ped.segmentId,
+        ticks_remaining: ped.ticksRemaining,
+        // Who can physically see them, versus who only knows because a peer
+        // told them. The gap between these two lists is the value collective
+        // perception adds, made visible.
+        seen_by: [...this.vehicles.values()].filter((v) => this.hasLineOfSight(v, ped)).map((v) => v.id).sort(),
+        known_by: [...this.vehicles.values()]
+          .filter((v) => v.pedestrianKnownOnlyFromPeers(ped.segmentId, this.tick))
+          .map((v) => v.id)
+          .sort(),
+      })),
+      perception: {
+        shared: this.perceptionStats.shared,
+        warned_blind: this.perceptionStats.warnedBlind,
+        brake_warnings: this.perceptionStats.brakeWarnings,
+        glosa_active: [...this.vehicles.values()].filter((v) => v.glosaAdvice !== null).length,
+      },
       signal_priority: {
         ...this.signalRequests,
         grant_rate_pct:

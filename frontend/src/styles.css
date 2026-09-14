@@ -242,7 +242,21 @@ select, input[type="number"] {
 }
 
 .control-body { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 18px; align-items: start; }
+/* Map-only mode: the side column is the reason the map is small, so the
+   fastest way to make the map big is to put the column away. */
+.control-body.wide { grid-template-columns: minmax(0, 1fr); }
+.control-body.wide .side { display: none; }
 .map-panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+.map-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  margin-bottom: 12px;
+}
+.density { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
+.density-label { font-size: 12px; color: var(--muted); margin-right: 3px; }
+.map-tools > .chip:last-child { margin-left: auto; }
 .side { display: flex; flex-direction: column; gap: 16px; }
 
 .city-map { width: 100%; height: auto; background: #070d14; border-radius: 8px; }
@@ -591,7 +605,57 @@ button.danger { background: #2c1414; border-color: #5e2525; color: #f3a8a8; }
   border-top: 3px dashed #f0b429;
   flex: none;
 }
+.key-ped {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #f7f3e8;
+  box-shadow: 0 0 0 3px rgba(240, 180, 41, 0.28);
+  flex: none;
+}
 .street-hint { margin: 10px 0 0; }
+
+/* ------------------------------- the three connected-driving use cases */
+.three-things .thing {
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+.three-things .thing:first-of-type { border-top: none; padding-top: 2px; }
+.three-things .thing p { margin: 5px 0 0; }
+.thing-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.thing-head h3 {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 650;
+  flex: 1;
+  min-width: 0;
+}
+.thing-icon { font-size: 16px; line-height: 1; flex: none; }
+.thing-count {
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-2);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  padding: 1px 9px;
+  flex: none;
+}
+/* Lit the moment the thing it counts actually happens. */
+.thing-count.live {
+  color: #0a1018;
+  background: #f0b429;
+  border-color: #f0b429;
+}
+.btn.tiny { font-size: 12px; padding: 4px 10px; margin-top: 7px; }
+.btn.wide { width: 100%; margin-top: 12px; }
+.ped-row + .ped-row { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 12px; }
+.good-text { color: #4ade80; }
 
 /* ------------------------------------------------------------ transport */
 .transport {

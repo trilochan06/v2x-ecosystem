@@ -14,6 +14,7 @@ const CAUSE_NAMES: Record<number, string> = {
   2: "an accident",
   6: "a slippery surface",
   9: "a hazardous road surface",
+  12: "someone on the road",
   19: "poor visibility",
   94: "a stopped vehicle",
   95: "an emergency vehicle approaching",
@@ -73,8 +74,23 @@ function phrase(
   audience: string,
 ): { tone: Line["tone"]; text: string } {
   switch (t.designator) {
+    case "CPM":
+      // The turning case: one car's sensors, everybody's knowledge.
+      return {
+        tone: "denm",
+        text:
+          t.delivered_to.length === 0
+            ? `${name(t.sender_id)} shared what its sensors can see on ${road(t.segment_id)} — nobody was in range to hear it.`
+            : `${name(t.sender_id)} can see someone on ${road(t.segment_id)} and told ${t.delivered_to.length} nearby ${t.delivered_to.length === 1 ? "station" : "stations"} — including cars with no view of them.`,
+      };
     case "DENM": {
       const cause = t.cause_code ? CAUSE_NAMES[t.cause_code] : undefined;
+      if (t.type === "denm-eebl") {
+        return {
+          tone: "denm",
+          text: `${name(t.sender_id)} braked hard on ${road(t.segment_id)} — the traffic behind was told before any driver could see the brake lights (${audience}).`,
+        };
+      }
       if (t.cause_code === 95) {
         return {
           tone: "denm",

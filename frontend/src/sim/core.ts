@@ -41,6 +41,33 @@ export const HAZARD_TYPES = [
 ];
 
 // --------------------------------------------------------------- world
+
+/**
+ * A vulnerable road user stepping onto a crossing.
+ *
+ * The point of modelling these is line of sight. A pedestrian crossing at an
+ * intersection is plainly visible to a car coming straight down that road,
+ * and invisible to a car about to turn into it from the perpendicular street.
+ * That asymmetry is the whole reason collective perception exists.
+ */
+export class Pedestrian {
+  constructor(
+    readonly id: string,
+    readonly node: string,
+    readonly segmentId: string,
+    public ticksRemaining: number,
+    readonly startedTick = 0,
+  ) {}
+
+  get active() {
+    return this.ticksRemaining > 0;
+  }
+
+  step() {
+    this.ticksRemaining = Math.max(0, this.ticksRemaining - 1);
+  }
+}
+
 export const nodeId = (x: number, y: number) => `${x}-${y}`;
 
 export class Segment {
@@ -205,6 +232,8 @@ export type MessageType =
   | "spatem"
   | "srem"
   | "ssem"
+  | "denm-eebl"
+  | "cpm"
   | "telemetry-upload";
 
 /** SSEM requestStatus values (TS 103 301 / SAE J2735). */
@@ -267,6 +296,22 @@ export const MESSAGE_SPECS: Record<MessageType, MessageSpec> = {
     bearer: "its-g5",
     payloadBytes: 64,
   },
+  "denm-eebl": {
+    designator: "DENM",
+    standard: "ETSI EN 302 637-3",
+    label: "Emergency electronic brake light",
+    bearer: "its-g5",
+    payloadBytes: 180,
+  },
+  cpm: {
+    designator: "CPM",
+    standard: "ETSI TS 103 324",
+    label: "Collective perception",
+    bearer: "its-g5",
+    // Management + sensor information containers. The perceived objects
+    // themselves are variable and ride in variableBytes.
+    payloadBytes: 121,
+  },
   "telemetry-upload": {
     designator: "probe",
     standard: "non-standard backhaul",
@@ -285,6 +330,10 @@ export const CERTIFICATE_DIGEST_BYTES = 8;
 export const CERT_ATTACH_INTERVAL_MESSAGES = 10;
 /** One waypoint of a predicted emergency path plus its ETA. */
 export const PATH_POINT_BYTES = 12;
+/** One PerceivedObject in a CPM: id, position, speed, classification and the
+ *  confidence values that come with each. This is why collective perception
+ *  is expensive — the frame grows with everything you can see. */
+export const PERCEIVED_OBJECT_BYTES = 35;
 
 /** DENM causeCode values from the TS 102 894-2 Common Data Dictionary. */
 export const CAUSE_CODE = {
@@ -295,6 +344,8 @@ export const CAUSE_CODE = {
   STATIONARY_VEHICLE: 94,
   EMERGENCY_VEHICLE_APPROACHING: 95,
   DANGEROUS_SITUATION: 99,
+  /** A person is on the carriageway — the turning-pedestrian case. */
+  HUMAN_PRESENCE_ON_THE_ROAD: 12,
 } as const;
 
 /** Hazard vocabulary mapped onto (causeCode, subCauseCode). */
@@ -305,6 +356,8 @@ export const HAZARD_CAUSE_CODES: Record<string, [number, number]> = {
   waterlogging: [CAUSE_CODE.HAZARDOUS_LOCATION_SURFACE_CONDITION, 0], // no CDD subcause
   oil_spill: [CAUSE_CODE.ADVERSE_WEATHER_ADHESION, 2], // fuelOnTheRoad
   fog_bank: [CAUSE_CODE.ADVERSE_WEATHER_VISIBILITY, 1], // fog
+  // humanPresenceOnTheRoad; a crossing adult is subcause 0 in the CDD.
+  pedestrian_crossing: [CAUSE_CODE.HUMAN_PRESENCE_ON_THE_ROAD, 0],
 };
 
 export function causeFor(hazardType: string): [number, number] {

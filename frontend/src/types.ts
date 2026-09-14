@@ -21,6 +21,22 @@ export interface VehicleState {
   yielding: boolean;
   trust_hint: number;
   reroute_count: number;
+  /** Mid hard-brake — the car behind is being told over the air right now. */
+  braking?: boolean;
+  /** km/h a red light ahead makes it worth holding, or null for carry on. */
+  glosa_advice?: number | null;
+}
+
+/** A vulnerable road user on a crossing (ETSI TS 103 324 perceived object). */
+export interface PedestrianState {
+  id: string;
+  node: string;
+  segment_id: string;
+  ticks_remaining: number;
+  /** Vehicles with a clear line of sight. */
+  seen_by: string[];
+  /** Vehicles that know only because a peer shared a CPM — the turning case. */
+  known_by: string[];
 }
 
 export interface Prediction {
@@ -248,6 +264,18 @@ export interface SimulationState {
   };
   metrics: MetricsSummary;
   active_corridors: string[];
+  pedestrians: PedestrianState[];
+  /** What the three Porsche prototypes actually achieved this run. */
+  perception: {
+    /** CPMs put on the air. */
+    shared: number;
+    /** Times a vehicle was warned about someone it could not see. */
+    warned_blind: number;
+    /** EEBL frames received by traffic behind a braking car. */
+    brake_warnings: number;
+    /** Vehicles currently holding a green-light advisory speed. */
+    glosa_active: number;
+  };
   /** SREM/SSEM outcomes. `unheard` is the interesting one. */
   signal_priority: {
     requested: number;

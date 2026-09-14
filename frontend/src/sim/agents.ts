@@ -9,6 +9,7 @@ import {
   HAZARD_TYPES,
   Message,
   PATH_POINT_BYTES,
+  PERCEIVED_OBJECT_BYTES,
   Rng,
   Segment,
   causeFor,
@@ -23,6 +24,16 @@ const OCCUPANCY_PING_TTL_HOPS = 2;
 const PEER_INFO_STALE_TICKS = 15;
 const CONGESTION_REROUTE_THRESHOLD = 0.8;
 const REROUTE_COOLDOWN_TICKS = 25;
+/** How long a vehicle keeps believing a pedestrian report it can no longer
+ *  confirm itself. */
+const PEDESTRIAN_MEMORY_TICKS = 8;
+/** A hard-braking manoeuvre lasts this long and is broadcast throughout. */
+const BRAKING_TICKS = 3;
+const BRAKING_SPEED_FACTOR = 0.2;
+const PEDESTRIAN_CAUTION_FACTOR = 0.45;
+/** Closer than this to the junction, holding a speed for the green is worth
+ *  advising. */
+const GLOSA_APPROACH_PROGRESS = 0.35;
 const REROUTE_LOOKAHEAD_HOPS = 3;
 const HAZARD_SENSE_PROBABILITY = 0.6;
 const LOOKAHEAD_SENSE_PROBABILITY = 0.3;
@@ -37,6 +48,16 @@ export class Vehicle {
   yieldInstruction: { eta_seconds: number; explanation: string } | null = null;
   trustHint = 1;
   rerouteCount = 0;
+  // --- Porsche prototype 1: emergency electronic brake light
+  brakingTicks = 0;
+  // --- Porsche prototype 2: collective perception
+  /** Pedestrians this vehicle can physically see. segmentId -> tick. */
+  seenPedestrians = new Map<string, number>();
+  /** Pedestrians it only knows about because a peer shared them in a CPM. */
+  toldPedestrians = new Map<string, number>();
+  // --- Porsche prototype 3: GLOSA
+  knownSignals = new Map<string, { phase: string; tick: number }>();
+  glosaAdvice: number | null = null;
   tripStartedTick = 0;
   /** Peer-shared knowledge only — written solely by receiveOccupancyPing, so
    *  rerouting is a genuine decentralized decision rather than a read of
@@ -100,6 +121,22 @@ export class Vehicle {
     if (seg.hazardActive) speed *= 0.4;
     if (this.recentWarning(seg.id, tick)) speed *= 0.85;
 
+    // A pedestrian on the carriageway ahead. Whether this vehicle can see them
+    // or was only told by a peer, it slows — that equivalence is the point of
+    // collective perception.
+    if (this.knowsPedestrianOn(seg.id, tick)) speed *= PEDESTRIAN_CAUTION_FACTOR;
+
+    // Hard braking dominates everything else while it lasts.
+    if (this.brakingTicks > 0) {
+      this.brakingTicks -= 1;
+      speed *= BRAKING_SPEED_FACTOR;
+    }
+
+    // GLOSA: hold a speed that arrives on green rather than racing up to a red
+    // and accelerating away from it.
+    this.glosaAdvice = this.glosaAdviceFor(nxt, tick, speed);
+    if (this.glosaAdvice !== null) speed = Math.min(speed, this.glosaAdvice);
+
     this.progress += ((speed * 1000) / 3600) / seg.lengthM;
     if (this.progress >= 1) {
       this.node = nxt;
@@ -115,6 +152,12 @@ export class Vehicle {
     if (hazard) outbound.push(hazard);
 
     if (allowV2v) {
+      const eebl = this.maybeReportBraking(seg, tick);
+      if (eebl) outbound.push(eebl);
+
+      const cpm = this.maybeSharePerception(tick);
+      if (cpm) outbound.push(cpm);
+
       const ping = this.maybeShareOccupancy(seg, tick);
       if (ping) outbound.push(ping);
       if (allowRerouting) rerouted = this.maybeReroute(tick);
@@ -164,6 +207,81 @@ export class Vehicle {
     });
   }
 
+  // --------------------------------- Porsche 1: emergency brake light
+  /** DENM cause 99/1, emergencyElectronicBrakeEngaged.
+   *
+   *  The rear-end case from the article: this car brakes because someone
+   *  stepped out, and the car behind is told immediately rather than when its
+   *  driver notices the brake lights. Public so tests can prove an attacker
+   *  cannot emit one — EEBL is trusted implicitly by whoever receives it. */
+  maybeReportBraking(seg: Segment, tick: number): Message | null {
+    if (this.brakingTicks <= 0 || this.kind === "malicious") return null;
+    const [causeCode, subCauseCode] = causeFor("hard_braking");
+    return makeMessage({
+      type: "denm-eebl",
+      senderId: this.id,
+      pseudonym: this.pseudonym,
+      payload: {
+        segment_id: seg.id,
+        hazard_type: "hard_braking",
+        cause_code: causeCode,
+        sub_cause_code: subCauseCode,
+        confidence: 1,
+      },
+      ttl: 2, // only the traffic immediately behind needs this
+      createdTick: tick,
+      signed: true,
+    });
+  }
+
+  // ------------------------------------ Porsche 2: collective perception
+  /** TS 103 324 CPM: publish what this vehicle's sensors can see.
+   *
+   *  Only objects it can *actually* see are shared. Re-broadcasting what
+   *  someone else told you would turn one sighting into a rumour with no
+   *  source, which is precisely what the standard's confidence fields exist
+   *  to prevent. */
+  maybeSharePerception(tick: number): Message | null {
+    const fresh = [...this.seenPedestrians.entries()]
+      .filter(([, heard]) => tick - heard <= 1)
+      .map(([segId]) => segId);
+    if (!fresh.length || this.kind === "malicious") return null;
+    const [causeCode, subCauseCode] = causeFor("pedestrian_crossing");
+    return makeMessage({
+      type: "cpm",
+      senderId: this.id,
+      pseudonym: this.pseudonym,
+      payload: {
+        objects: fresh.length,
+        segment_id: fresh[0],
+        cause_code: causeCode,
+        sub_cause_code: subCauseCode,
+      },
+      ttl: 2,
+      createdTick: tick,
+      signed: true,
+      // The frame grows with everything you can see: collective perception is
+      // a bandwidth trade, not a free win.
+      variableBytes: fresh.length * PERCEIVED_OBJECT_BYTES,
+    });
+  }
+
+  // ------------------------------------------------- Porsche 3: GLOSA
+  /** Green Light Optimal Speed Advisory, from the SPaT already heard.
+   *
+   *  No new message type: the intersection is broadcasting its phase anyway,
+   *  and this is what a vehicle can do with it. Arriving at a steady 30 km/h
+   *  beats arriving at 50 and stopping. */
+  glosaAdviceFor(nxt: string, tick: number, currentSpeed: number): number | null {
+    const known = this.knownSignals.get(nxt);
+    if (!known) return null;
+    if (tick - known.tick > PEDESTRIAN_MEMORY_TICKS) return null; // may have changed
+    if (known.phase !== "red") return null; // it is green, so just carry on
+    if (1 - this.progress > GLOSA_APPROACH_PROGRESS) return null; // too far to matter
+    // Ease off rather than race up to a red and brake.
+    return Math.max(12, currentSpeed * 0.55);
+  }
+
   /** An attacker's CAM is where false *traffic state* enters the network.
    *  Its hazard DENMs are caught by corroboration; this is the quieter
    *  channel, and it is the one that reaches the training data. */
@@ -190,6 +308,41 @@ export class Vehicle {
 
   receiveHazardWarning(segmentId: string, tick: number) {
     this.hazardWarnings.set(segmentId, tick);
+  }
+
+  /** A peer's CPM told us about a road user. Kept apart from what we can see:
+   *  the difference is exactly what collective perception buys. */
+  receivePerceivedObject(segmentId: string, tick: number) {
+    this.toldPedestrians.set(segmentId, tick);
+  }
+
+  /** SPaT from an intersection ahead. */
+  receiveSignalPhase(node: string, phase: string, tick: number) {
+    this.knownSignals.set(node, { phase, tick });
+  }
+
+  knowsPedestrianOn(segmentId: string | null, tick: number): boolean {
+    if (!segmentId) return false;
+    for (const source of [this.seenPedestrians, this.toldPedestrians]) {
+      const heard = source.get(segmentId);
+      if (heard !== undefined && tick - heard <= PEDESTRIAN_MEMORY_TICKS) return true;
+    }
+    return false;
+  }
+
+  /** True when the only reason it knows is that it was told — the turning
+   *  case, where the corner blocks the view entirely. */
+  pedestrianKnownOnlyFromPeers(segmentId: string | null, tick: number): boolean {
+    if (!segmentId) return false;
+    const seen = this.seenPedestrians.get(segmentId);
+    if (seen !== undefined && tick - seen <= PEDESTRIAN_MEMORY_TICKS) return false;
+    const told = this.toldPedestrians.get(segmentId);
+    return told !== undefined && tick - told <= PEDESTRIAN_MEMORY_TICKS;
+  }
+
+  /** Begin a hard-braking manoeuvre — a pedestrian stepped into our path. */
+  brakeHard() {
+    this.brakingTicks = BRAKING_TICKS;
   }
 
   private recentWarning(segmentId: string, tick: number) {
@@ -240,6 +393,8 @@ export class Vehicle {
       yielding: Boolean(this.yieldInstruction),
       trust_hint: this.trustHint,
       reroute_count: this.rerouteCount,
+      braking: this.brakingTicks > 0,
+      glosa_advice: this.glosaAdvice === null ? null : Math.round(this.glosaAdvice * 10) / 10,
     };
   }
 }
@@ -486,13 +641,25 @@ export class TrafficLight {
     readonly node: string,
   ) {}
 
+  /** Phase offset for this junction, from its coordinates.
+   *
+   *  Without it every light in the city turned red at the same instant, which
+   *  is both unrealistic and useless to demonstrate against: a vehicle could
+   *  never meet a red one junction and a green the next. Offsetting by
+   *  position is also roughly what a real grid does to create a green wave. */
+  get offset(): number {
+    const parts = this.node.split("-").map(Number);
+    if (parts.length !== 2 || parts.some(Number.isNaN)) return 0;
+    return ((parts[0] + parts[1]) * Math.floor(CYCLE_TICKS / 2)) % (CYCLE_TICKS * 2);
+  }
+
   step(tick: number) {
     if (tick <= this.preemptedUntil) {
       this.phase = "green";
       return;
     }
     this.preemptReason = "";
-    this.phase = Math.floor(tick / CYCLE_TICKS) % 2 === 0 ? "green" : "red";
+    this.phase = Math.floor((tick + this.offset) / CYCLE_TICKS) % 2 === 0 ? "green" : "red";
   }
 
   preempt(tick: number, holdTicks: number, reason: string) {

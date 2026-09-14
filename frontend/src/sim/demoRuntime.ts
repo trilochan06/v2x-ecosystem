@@ -133,6 +133,14 @@ export const demo = {
     publish();
     return v.id;
   },
+  /** Step someone onto a crossing. The engine picks a crossing with traffic
+   *  on it, because a pedestrian nobody is driving towards demonstrates
+   *  nothing. Returns the crossing so the page can say where to look. */
+  spawnPedestrian: () => {
+    const id = engine.spawnPedestrian();
+    publish();
+    return id ? (engine.pedestrians.get(id)?.segmentId ?? null) : null;
+  },
   setCloud: (online: boolean) => {
     engine.setCloudOnline(online);
     publish();

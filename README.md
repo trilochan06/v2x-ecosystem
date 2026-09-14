@@ -91,10 +91,14 @@ The message set is not invented. Frames are the ETSI C-ITS "Day-1" services, and
 the byte sizes are what drives the bandwidth results, so they are modelled on the
 encodings rather than on `len(str(payload))`:
 
-| Frame | Standard | Role | Signed size on the air |
+| Frame | Standard | Role | Size on the air |
 | --- | --- | --- | --- |
-| **CAM** | ETSI EN 302 637-2 | Periodic awareness heartbeat | 210 B (319 B when the certificate is attached) |
-| **DENM** | ETSI EN 302 637-3 | Event-driven hazard warning | 273 B (382 B with certificate) |
+| **CAM** | ETSI EN 302 637-2 | Periodic awareness heartbeat | 210 B signed (319 B when the certificate is attached) |
+| **DENM** | ETSI EN 302 637-3 | Event-driven hazard warning | 273 B signed (382 B with certificate) |
+| **DENM (EEBL)** | ETSI EN 302 637-3 | Emergency electronic brake light, cause 99/1 | 273 B signed |
+| **CPM** | ETSI TS 103 324 | Collective perception | 214 B signed, +35 B per perceived object |
+| **SPATEM** | ETSI TS 103 301 | Signal phase and timing | 100 B from the roadside unit |
+| **SREM / SSEM** | ETSI TS 103 301 | Priority request and its answer | 177 B signed / 68 B |
 | probe | — | Raw telemetry, the cloud-only baseline | 92 B over TLS |
 
 A DENM carries a `causeCode`/`subCauseCode` from the **TS 102 894-2** Common Data
@@ -113,9 +117,30 @@ Two details are modelled because they change the numbers:
   faster buys unlinkability and spends bandwidth — the Security page shows the
   running total.
 
-Not implemented: SPATEM/MAPEM, IVIM, SREM/SSEM and CPM — the Day-1.5 set. The
-traffic lights and emergency corridor here would use SPATEM and SREM/SSEM in a
-real deployment and instead act through direct calls. See `docs/ROADMAP.md`.
+Not implemented: MAPEM and IVIM. Intersection geometry is a grid here, so a MAPEM
+would describe nothing a viewer cannot already see.
+
+### Three connected-driving applications
+
+Each is a standard frame doing something a driver would notice, and each is
+reachable from the **Street view** page in one click:
+
+- **Emergency brake warning.** A car brakes hard for someone stepping out and
+  emits a DENM with `causeCode` 99 / `subCauseCode` 1
+  (*emergencyElectronicBrakeEngaged*). The traffic behind is told before any
+  driver could see the brake lights. An attacker cannot emit one — the frame is
+  believed on receipt, so a liar must not be able to raise it.
+- **Collective perception.** Line of sight is limited to the crossing itself: a
+  car turning in from a perpendicular street is blind, and the corner is why.
+  A car that *can* see the pedestrian publishes a CPM, and the turning car slows
+  for someone it has never seen. The frame grows 35 B per perceived object, so
+  this is a bandwidth trade rather than a free win — the CPM column on the
+  control centre shows what it costs.
+- **Green Light Optimal Speed Advisory.** Junctions already broadcast SPaT; a
+  vehicle hearing "red" on the junction it is approaching holds an advisory speed
+  and arrives on green instead of braking and accelerating away. The advice is
+  never faster than carrying on, and a phase heard about too long ago is
+  discarded rather than acted on.
 
 ## Running it
 

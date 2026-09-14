@@ -290,3 +290,46 @@ describe("transmission log", () => {
     expect(designators.has("SPATEM")).toBe(true);
   });
 });
+
+// ------------------------------------------------------ traffic density
+describe("traffic density control", () => {
+  const city = () => new SimulationEngine({ gridSize: 5, numRsus: 4, numVehicles: 12, seed: 9 });
+
+  it("thins the city out and fills it back up", () => {
+    const e = city();
+    e.setVehicleCount(5);
+    expect(e.vehicles.size).toBe(5);
+    e.setVehicleCount(18);
+    expect(e.vehicles.size).toBe(18);
+  });
+
+  it("keeps the ambulance and the attacker when thinning", () => {
+    // Removing the vehicle somebody just dispatched to watch would be its own
+    // kind of confusing.
+    const e = city();
+    const amb = e.spawnVehicle("ambulance").id;
+    const bad = e.spawnVehicle("malicious").id;
+    e.setVehicleCount(3);
+    expect(e.vehicles.has(amb)).toBe(true);
+    expect(e.vehicles.has(bad)).toBe(true);
+  });
+
+  it("stops counting a removed vehicle as served by its RSU", () => {
+    // Regression: the RSU cell assignment outlived the vehicle, so the cell
+    // sizes kept counting cars that no longer existed.
+    const e = city();
+    for (let i = 0; i < 10; i++) e.step();
+    e.setVehicleCount(4);
+    const served = e.stateSnapshot().rsus.reduce((s, r) => s + r.cell_size, 0);
+    expect(served).toBeLessThanOrEqual(e.vehicles.size);
+  });
+
+  it("keeps stepping cleanly after vehicles are removed", () => {
+    const e = city();
+    for (let i = 0; i < 15; i++) e.step();
+    e.setVehicleCount(2);
+    for (let i = 0; i < 25; i++) e.step();
+    expect(e.vehicles.size).toBe(2);
+    expect(e.stateSnapshot().tick).toBe(40);
+  });
+});

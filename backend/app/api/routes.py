@@ -29,6 +29,11 @@ class ArchitectureRequest(BaseModel):
     key: str
 
 
+class DensityRequest(BaseModel):
+    #: Bounded so a request cannot ask for a city that never finishes a tick.
+    vehicles: int = Field(ge=1, le=200)
+
+
 class ExperimentRequest(BaseModel):
     scenario: str = "normal"
     ticks: int = Field(default=250, ge=60, le=800)
@@ -82,6 +87,29 @@ def spawn_ambulance():
 @router.post("/malicious/spawn")
 def spawn_malicious():
     return {"vehicle_id": get_engine().spawn_vehicle("malicious").id}
+
+
+@router.post("/vehicles/density")
+def set_density(request: DensityRequest):
+    """Thin the traffic out or pack it in.
+
+    A map is only readable at a density the viewer chose; twenty-six dots
+    measures well and reads badly.
+    """
+    return {"vehicles": get_engine().set_vehicle_count(request.vehicles)}
+
+
+@router.post("/pedestrians")
+def spawn_pedestrian():
+    """Step someone onto a crossing (the collective-perception use case)."""
+    engine = get_engine()
+    pedestrian_id = engine.spawn_pedestrian()
+    if pedestrian_id is None:
+        raise HTTPException(status_code=409, detail="no crossing available")
+    return {
+        "pedestrian_id": pedestrian_id,
+        "segment_id": engine.pedestrians[pedestrian_id].segment_id,
+    }
 
 
 @router.post("/hazards")

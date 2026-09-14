@@ -15,6 +15,15 @@ DENM  EN 302 637-3  Decentralized Environmental Notification Message. Event
                     the TS 102 894-2 Common Data Dictionary rather than a
                     free-text hazard label.
 
+Also implemented -- collective perception
+-----------------------------------------
+CPM    TS 103 324   Collective Perception Message. A station shares what its
+                    *sensors* detect, not just its own state, so a vehicle
+                    whose view is blocked learns about a road user it cannot
+                    see. The frame grows with every object reported, which is
+                    the cost that makes collective perception a trade rather
+                    than a free win.
+
 Also implemented -- the "Day-1.5" signal set
 -------------------------------------------
 SPATEM TS 103 301   Signal Phase And Timing. Every signalised intersection
@@ -31,8 +40,8 @@ a real deployment has to cope with and a function call never does.
 
 Not implemented
 ---------------
-MAPEM (intersection topology, which SPaT references by lane id) and CPM
-(collective perception, TS 103 324). See docs/ROADMAP.md.
+MAPEM -- intersection topology, which SPaT references by lane id. See
+docs/ROADMAP.md.
 
 Frame sizing
 ------------
@@ -99,6 +108,14 @@ class MessageType(StrEnum):
     SREM = "srem"
     #: TS 103 301 SSEM -- the intersection's answer to a SREM.
     SSEM = "ssem"
+    #: EN 302 637-3 DENM, cause 99/1 -- this vehicle is braking hard. The
+    #: rear-end collision case: the car behind is warned before its driver
+    #: can see why.
+    DENM_EEBL = "denm-eebl"
+    #: TS 103 324 Collective Perception Message -- what this station's
+    #: *sensors* can see, shared so a station with a blocked view learns
+    #: about a road user it cannot detect itself.
+    CPM = "cpm"
     #: Raw probe data streamed to a central service. Not a C-ITS message.
     TELEMETRY_UPLOAD = "telemetry-upload"
 
@@ -126,6 +143,8 @@ class CauseCode(IntEnum):
     STATIONARY_VEHICLE = 94
     EMERGENCY_VEHICLE_APPROACHING = 95
     DANGEROUS_SITUATION = 99
+    #: A person is on the carriageway -- the turning-pedestrian case.
+    HUMAN_PRESENCE_ON_THE_ROAD = 12
 
 
 #: Maps this simulation's hazard vocabulary onto (causeCode, subCauseCode).
@@ -147,6 +166,9 @@ HAZARD_CAUSE_CODES: dict[str, tuple[CauseCode, int]] = {
     "oil_spill": (CauseCode.ADVERSE_WEATHER_ADHESION, 2),
     # adverseWeatherCondition-Visibility / fog
     "fog_bank": (CauseCode.ADVERSE_WEATHER_VISIBILITY, 1),
+    # humanPresenceOnTheRoad / childrenOnRoadway is subcause 1; a crossing
+    # adult is subcause 0 (unavailable) in the CDD.
+    "pedestrian_crossing": (CauseCode.HUMAN_PRESENCE_ON_THE_ROAD, 0),
 }
 
 
@@ -248,6 +270,22 @@ MESSAGE_SPECS: dict[MessageType, MessageSpec] = {
         # SignalStatus with the request's id and its disposition.
         payload_bytes=64,
     ),
+    MessageType.DENM_EEBL: MessageSpec(
+        designator="DENM",
+        standard="ETSI EN 302 637-3",
+        label="Emergency electronic brake light",
+        bearer=Bearer.ITS_G5,
+        payload_bytes=180,
+    ),
+    MessageType.CPM: MessageSpec(
+        designator="CPM",
+        standard="ETSI TS 103 324",
+        label="Collective perception",
+        bearer=Bearer.ITS_G5,
+        # Management + sensor information containers. The perceived objects
+        # themselves are variable and ride in `variable_bytes`.
+        payload_bytes=121,
+    ),
     MessageType.TELEMETRY_UPLOAD: MessageSpec(
         designator="probe",
         standard="non-standard backhaul",
@@ -260,6 +298,10 @@ MESSAGE_SPECS: dict[MessageType, MessageSpec] = {
 
 #: One waypoint of a predicted emergency path plus its ETA, UPER encoded.
 PATH_POINT_BYTES = 12
+#: One PerceivedObject in a CPM: id, position, speed, classification and the
+#: confidence values that come with each. This is why collective perception
+#: is expensive -- the frame grows with everything you can see.
+PERCEIVED_OBJECT_BYTES = 35
 
 
 class CertificateAttachmentPolicy:

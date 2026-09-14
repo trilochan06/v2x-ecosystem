@@ -11,7 +11,29 @@ import type { SimulationState } from "../types";
 
 export const TICK_INTERVAL_MS = 800;
 
-let engine = new SimulationEngine({ seed: Math.floor(Math.random() * 1e9) });
+/**
+ * How many vehicles the live city starts with.
+ *
+ * It used to be 26, which measures perfectly well and reads terribly: at that
+ * density the map is a field of dots and you cannot follow anything. The
+ * experiment suite sets its own counts per scenario, so this number only
+ * affects what the control centre shows, and the density control below lets
+ * the viewer put it back up.
+ */
+export const DEFAULT_VEHICLE_COUNT = 14;
+
+/** Traffic densities offered on the control centre, sparsest first. */
+export const DENSITIES = [
+  { label: "Quiet", vehicles: 8 },
+  { label: "Normal", vehicles: DEFAULT_VEHICLE_COUNT },
+  { label: "Busy", vehicles: 22 },
+  { label: "Rush hour", vehicles: 34 },
+] as const;
+
+let engine = new SimulationEngine({
+  seed: Math.floor(Math.random() * 1e9),
+  numVehicles: DEFAULT_VEHICLE_COUNT,
+});
 const listeners = new Set<(s: SimulationState) => void>();
 let timer: number | undefined;
 
@@ -44,7 +66,11 @@ export function getEngine() {
 export function switchArchitecture(key: string) {
   const config = CONFIGS[key];
   if (!config) return;
-  engine = new SimulationEngine({ config, seed: Math.floor(Math.random() * 1e9) });
+  engine = new SimulationEngine({
+    config,
+    seed: Math.floor(Math.random() * 1e9),
+    numVehicles: engine.vehicles.size || DEFAULT_VEHICLE_COUNT,
+  });
   publish();
 }
 
@@ -96,6 +122,18 @@ export const commands = {
     const segmentId = engine.injectHazard();
     publish();
     return segmentId;
+  },
+  spawnPedestrian: () => {
+    const id = engine.spawnPedestrian();
+    publish();
+    return id ? (engine.pedestrians.get(id)?.segmentId ?? null) : null;
+  },
+  /** Thin the traffic out or pack it in. The map is only readable at a
+   *  density the viewer chose. */
+  setVehicleCount: (target: number) => {
+    engine.setVehicleCount(target);
+    publish();
+    return engine.vehicles.size;
   },
   replayAttack: () => {
     const result = engine.injectReplayAttack();

@@ -25,6 +25,47 @@ def node_id(x: int, y: int) -> str:
 
 
 @dataclass
+class Pedestrian:
+    """A vulnerable road user stepping onto a crossing.
+
+    The point of modelling these is line of sight. A pedestrian crossing at an
+    intersection is plainly visible to a car coming straight down that road,
+    and invisible to a car about to turn into it from the perpendicular
+    street -- the corner of the building is in the way. That asymmetry is the
+    whole reason collective perception exists, and it is what the turning
+    case in the Porsche prototypes is about.
+    """
+
+    id: str
+    #: The intersection being crossed at.
+    node: str
+    #: The segment whose carriageway the pedestrian is standing on.
+    segment_id: str
+    ticks_remaining: int
+    started_tick: int = 0
+
+    @property
+    def active(self) -> bool:
+        return self.ticks_remaining > 0
+
+    def step(self) -> None:
+        self.ticks_remaining = max(0, self.ticks_remaining - 1)
+
+    def to_state(self, seen_by: list[str], known_by: list[str]) -> dict:
+        return {
+            "id": self.id,
+            "node": self.node,
+            "segment_id": self.segment_id,
+            "ticks_remaining": self.ticks_remaining,
+            # Who can physically see them, versus who only knows because a
+            # peer told them. The gap between these two lists is the value
+            # collective perception adds, made visible.
+            "seen_by": seen_by,
+            "known_by": known_by,
+        }
+
+
+@dataclass
 class Segment:
     id: str
     a: str

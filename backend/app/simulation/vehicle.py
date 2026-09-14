@@ -24,7 +24,12 @@ import random
 from dataclasses import dataclass, field
 from typing import Literal
 
-from app.network.messages import Message, MessageType, cause_for
+from app.network.messages import (
+    PERCEIVED_OBJECT_BYTES,
+    Message,
+    MessageType,
+    cause_for,
+)
 from app.network.security import sign
 from app.simulation.world import HAZARD_TYPES, CityGrid
 
@@ -47,6 +52,18 @@ LOOKAHEAD_SENSE_PROBABILITY = 0.3
 SENSOR_NOISE_PROBABILITY = 0.004
 # How aggressively a malicious node fabricates hazards on clear roads.
 FABRICATION_PROBABILITY = 0.35
+
+# How long a vehicle keeps believing a pedestrian report it can no longer
+# confirm itself.
+PEDESTRIAN_MEMORY_TICKS = 8
+# A hard-braking manoeuvre lasts this long and is broadcast throughout.
+BRAKING_TICKS = 3
+# What a hard brake does to speed, and what a pedestrian warning does.
+BRAKING_SPEED_FACTOR = 0.2
+PEDESTRIAN_CAUTION_FACTOR = 0.45
+# Below this share of the segment remaining, a signal is close enough that
+# holding a speed to catch the green is worth advising.
+GLOSA_APPROACH_PROGRESS = 0.35
 
 
 @dataclass
@@ -75,6 +92,26 @@ class Vehicle:
     reroute_count: int = 0
     trip_started_tick: int = 0
     _reroute_cooldown_until: int = 0
+
+    # --- Porsche prototype 1: emergency electronic brake light -----------
+    #: Ticks left of a hard-braking manoeuvre. While non-zero the vehicle is
+    #: decelerating sharply and broadcasting a DENM about it.
+    braking_ticks: int = 0
+
+    # --- Porsche prototype 2: collective perception ----------------------
+    #: Pedestrians this vehicle can physically see, set by the engine from
+    #: line of sight. segment_id -> tick.
+    seen_pedestrians: dict[str, int] = field(default_factory=dict)
+    #: Pedestrians it only knows about because a peer shared them in a CPM.
+    #: This is the set that a car turning blind into a crossing acts on.
+    told_pedestrians: dict[str, int] = field(default_factory=dict)
+
+    # --- Porsche prototype 3: GLOSA --------------------------------------
+    #: Signal phase heard over SPaT. node -> (phase, tick).
+    known_signals: dict[str, tuple[str, int]] = field(default_factory=dict)
+    #: The speed advice derived from it, in km/h, or None when no signal is
+    #: within earshot.
+    glosa_advice: float | None = None
 
     def __post_init__(self) -> None:
         if not self.destination:
@@ -134,6 +171,23 @@ class Vehicle:
         if self._recent_warning(seg.id, tick):
             effective_speed *= 0.85  # forewarned, so approaching cautiously
 
+        # A pedestrian on the carriageway ahead. Whether this vehicle can see
+        # them or was only told by a peer, it slows -- that equivalence is the
+        # point of collective perception.
+        if self.knows_pedestrian_on(seg.id, tick):
+            effective_speed *= PEDESTRIAN_CAUTION_FACTOR
+
+        # Hard braking dominates everything else while it lasts.
+        if self.braking_ticks > 0:
+            self.braking_ticks -= 1
+            effective_speed *= BRAKING_SPEED_FACTOR
+
+        # GLOSA: hold a speed that arrives on green rather than braking at a
+        # red and accelerating away from it.
+        self.glosa_advice = self._glosa_advice(nxt, tick, effective_speed)
+        if self.glosa_advice is not None:
+            effective_speed = min(effective_speed, self.glosa_advice)
+
         self.progress += (effective_speed * 1000 / 3600 * dt_s) / seg.length_m
         if self.progress >= 1.0:
             self.node = nxt
@@ -148,6 +202,14 @@ class Vehicle:
             outbound.append(hazard_msg)
 
         if allow_v2v:
+            eebl = self._maybe_report_braking(seg, tick)
+            if eebl is not None:
+                outbound.append(eebl)
+
+            cpm = self._maybe_share_perception(tick)
+            if cpm is not None:
+                outbound.append(cpm)
+
             ping = self._maybe_share_occupancy(seg, tick)
             if ping is not None:
                 outbound.append(ping)
@@ -204,6 +266,95 @@ class Vehicle:
             origin_segment=seg.id,
         )
 
+    # --------------------------------- Porsche 1: emergency brake light
+    def brake_hard(self) -> None:
+        """Begin a hard-braking manoeuvre. The engine calls this when a
+        pedestrian steps out in front of this vehicle."""
+        self.braking_ticks = BRAKING_TICKS
+
+    def _maybe_report_braking(self, seg, tick: int) -> Message | None:
+        """DENM cause 99/1, emergencyElectronicBrakeEngaged.
+
+        The rear-end case from the article: this car brakes because a child
+        stepped out, and the car behind is told immediately rather than when
+        its driver notices the brake lights."""
+        if self.braking_ticks <= 0 or self.kind == "malicious":
+            return None
+        cause_code, sub_cause_code = cause_for("hard_braking")
+        payload = {
+            "segment_id": seg.id,
+            "hazard_type": "hard_braking",
+            "cause_code": cause_code,
+            "sub_cause_code": sub_cause_code,
+            "confidence": 1.0,
+        }
+        return Message(
+            type=MessageType.DENM_EEBL,
+            sender_id=self.id,
+            pseudonym=self.pseudonym,
+            payload=payload,
+            ttl=2,  # only the traffic immediately behind needs this
+            created_tick=tick,
+            signature=sign(payload, self.signing_key),
+            origin_segment=seg.id,
+        )
+
+    # ------------------------------------ Porsche 2: collective perception
+    def _maybe_share_perception(self, tick: int) -> Message | None:
+        """TS 103 324 CPM: publish what this vehicle's sensors can see.
+
+        Only objects it can *actually* see are shared. Re-broadcasting what
+        someone else told you would turn one sighting into a rumour with no
+        source, which is precisely what the standard's confidence fields
+        exist to prevent."""
+        fresh = [
+            seg_id
+            for seg_id, heard in self.seen_pedestrians.items()
+            if tick - heard <= 1
+        ]
+        if not fresh or self.kind == "malicious":
+            return None
+        cause_code, sub_cause_code = cause_for("pedestrian_crossing")
+        payload = {
+            "objects": len(fresh),
+            "segment_id": fresh[0],
+            "cause_code": cause_code,
+            "sub_cause_code": sub_cause_code,
+        }
+        return Message(
+            type=MessageType.CPM,
+            sender_id=self.id,
+            pseudonym=self.pseudonym,
+            payload=payload,
+            ttl=2,
+            created_tick=tick,
+            signature=sign(payload, self.signing_key),
+            # The frame grows with everything you can see: collective
+            # perception is a bandwidth trade, not a free win.
+            variable_bytes=len(fresh) * PERCEIVED_OBJECT_BYTES,
+        )
+
+    # ------------------------------------------------- Porsche 3: GLOSA
+    def _glosa_advice(self, nxt: str, tick: int, current_speed: float) -> float | None:
+        """Green Light Optimal Speed Advisory, from the SPaT already heard.
+
+        No new message type: the intersection is broadcasting its phase
+        anyway, and this is what a vehicle can do with it. Arriving at a
+        steady 30 km/h beats arriving at 50 and stopping."""
+        known = self.known_signals.get(nxt)
+        if known is None:
+            return None
+        phase, heard = known
+        if tick - heard > PEDESTRIAN_MEMORY_TICKS:
+            return None  # stale; the light may well have changed
+        if phase != "red":
+            return None  # it is green, so just carry on
+        if 1.0 - self.progress > GLOSA_APPROACH_PROGRESS:
+            return None  # too far away for the advice to mean anything
+
+        # Ease off rather than race up to a red and brake.
+        return max(12.0, current_speed * 0.55)
+
     # ------------------------------------------------- M2 peer occupancy
     def _maybe_share_occupancy(self, seg, tick: int) -> Message | None:
         if tick % OCCUPANCY_PING_INTERVAL_TICKS != 0:
@@ -230,6 +381,40 @@ class Vehicle:
 
     def receive_hazard_warning(self, segment_id: str, tick: int) -> None:
         self.hazard_warnings[segment_id] = tick
+
+    def receive_perceived_object(self, segment_id: str, tick: int) -> None:
+        """A peer's CPM told us about a road user on `segment_id`.
+
+        Kept apart from `seen_pedestrians` on purpose: the difference between
+        what a vehicle can see and what it has been told is exactly what
+        collective perception buys, and the site draws that distinction."""
+        self.told_pedestrians[segment_id] = tick
+
+    def receive_signal_phase(self, node: str, phase: str, tick: int) -> None:
+        """SPaT from an intersection ahead."""
+        self.known_signals[node] = (phase, tick)
+
+    def knows_pedestrian_on(self, segment_id: str | None, tick: int) -> bool:
+        if segment_id is None:
+            return False
+        for source in (self.seen_pedestrians, self.told_pedestrians):
+            heard = source.get(segment_id)
+            if heard is not None and tick - heard <= PEDESTRIAN_MEMORY_TICKS:
+                return True
+        return False
+
+    def pedestrian_known_only_from_peers(self, segment_id: str | None, tick: int) -> bool:
+        """True when the only reason this vehicle knows is that it was told.
+
+        The turning case: the corner blocks the view, so without a peer's CPM
+        the driver would arrive at the crossing with no warning at all."""
+        if segment_id is None:
+            return False
+        seen = self.seen_pedestrians.get(segment_id)
+        if seen is not None and tick - seen <= PEDESTRIAN_MEMORY_TICKS:
+            return False
+        told = self.told_pedestrians.get(segment_id)
+        return told is not None and tick - told <= PEDESTRIAN_MEMORY_TICKS
 
     def _recent_warning(self, segment_id: str, tick: int) -> bool:
         heard = self.hazard_warnings.get(segment_id)
@@ -285,4 +470,7 @@ class Vehicle:
             "yielding": bool(self.yield_instruction),
             "trust_hint": self.trust_hint,
             "reroute_count": self.reroute_count,
+            # The three Porsche prototypes, as this vehicle experiences them.
+            "braking": self.braking_ticks > 0,
+            "glosa_advice": round(self.glosa_advice, 1) if self.glosa_advice is not None else None,
         }

@@ -23,8 +23,6 @@ export function StreetView() {
 
   if (!state) return <div className="loading">Starting the simulator…</div>;
 
-  const road = (id: string) => id.replace("_", " → ");
-
   const onHazard = () => {
     const id = demo.injectHazard(selectedSegment ?? undefined);
     if (!id) {
@@ -58,7 +56,24 @@ export function StreetView() {
     );
   };
 
+  const onPedestrian = () => {
+    const segmentId = demo.spawnPedestrian();
+    if (!segmentId) {
+      push("No crossing available right now — step a tick and try again.", "warn");
+      return;
+    }
+    setSelectedSegment(segmentId);
+    push(
+      `Someone stepped onto ${road(segmentId)}. The car that can see them brakes and tells the ` +
+        `cars behind and around it — watch who gets warned without ever seeing them.`,
+      "warn",
+    );
+    if (!playing) demo.stepOnce();
+  };
+
   const vehicle = state.vehicles.find((v) => v.id === selectedVehicle) ?? null;
+  const perception = state.perception;
+  const glosaCar = state.vehicles.find((v) => v.glosa_advice != null) ?? null;
 
   return (
     <div className="stack street-view">
@@ -142,6 +157,12 @@ export function StreetView() {
               <i className="key-ring" style={{ borderColor: "#199e70" }} /> SPaT — signal phase
             </span>
             <span>
+              <i className="key-ring" style={{ borderColor: "#f0b429" }} /> CPM — “someone is here”
+            </span>
+            <span>
+              <i className="key-ped" /> pedestrian on a crossing
+            </span>
+            <span>
               <i className="key-line dashed-amber" /> confirmed incident
             </span>
           </div>
@@ -155,6 +176,9 @@ export function StreetView() {
           <div className="panel">
             <h2>Make something happen</h2>
             <div className="btn-col">
+              <button className="btn primary" onClick={onPedestrian}>
+                🚶 Step someone into the road
+              </button>
               <button onClick={onHazard}>🚧 Cause a crash</button>
               <button onClick={onAmbulance}>🚑 Send an ambulance</button>
               <button onClick={onAttacker}>😈 Add a liar</button>
@@ -167,6 +191,26 @@ export function StreetView() {
               Nothing happens on its own here — no random hazards interrupting you mid-explanation.
             </p>
           </div>
+
+          <ThreeThings
+            perception={perception}
+            glosaCar={glosaCar?.id ?? null}
+            onTrigger={onPedestrian}
+            onFollowGlosa={() => {
+              if (glosaCar) {
+                setSelectedVehicle(glosaCar.id);
+                push(
+                  `${glosaCar.id} is easing to ${Math.round(glosaCar.glosa_advice ?? 0)} km/h so it ` +
+                    `reaches the junction as the light turns green.`,
+                  "good",
+                );
+              } else {
+                push("No car is approaching a red right now — let it run a few more ticks.", "info");
+              }
+            }}
+          />
+
+          {state.pedestrians.length > 0 && <PedestrianInspector state={state} />}
 
           <Narration state={state} />
 
@@ -185,6 +229,123 @@ export function StreetView() {
       </div>
 
       <Toaster toasts={toasts} dismiss={dismiss} />
+    </div>
+  );
+}
+
+const road = (id: string) => id.replace("_", " → ");
+
+/**
+ * The three things a connected car does that an unconnected one cannot.
+ *
+ * Every number here is read live off the running simulation — nothing is
+ * scripted. The middle one is the interesting one: a car acting on somebody
+ * it has no way of seeing.
+ */
+function ThreeThings({
+  perception,
+  glosaCar,
+  onTrigger,
+  onFollowGlosa,
+}: {
+  perception: SimulationState["perception"];
+  glosaCar: string | null;
+  onTrigger: () => void;
+  onFollowGlosa: () => void;
+}) {
+  return (
+    <div className="panel three-things">
+      <h2>Three things the radio does</h2>
+
+      <div className="thing">
+        <div className="thing-head">
+          <span className="thing-icon">🛑</span>
+          <h3>Warns the car behind, instantly</h3>
+          <span className={perception.brake_warnings > 0 ? "thing-count live" : "thing-count"}>
+            {perception.brake_warnings}
+          </span>
+        </div>
+        <p className="muted small">
+          A car brakes hard because someone stepped out. The cars behind are told over the air
+          before any driver could notice the brake lights.
+        </p>
+      </div>
+
+      <div className="thing">
+        <div className="thing-head">
+          <span className="thing-icon">👁</span>
+          <h3>Sees round the corner</h3>
+          <span className={perception.warned_blind > 0 ? "thing-count live" : "thing-count"}>
+            {perception.warned_blind}
+          </span>
+        </div>
+        <p className="muted small">
+          A car turning into a street cannot see the pedestrian on it — the corner is in the way.
+          Another car that <em>can</em> see them shares what its sensors report, and the turning car
+          slows for someone it has never seen. {perception.shared} such reports sent so far.
+        </p>
+      </div>
+
+      <div className="thing">
+        <div className="thing-head">
+          <span className="thing-icon">🚦</span>
+          <h3>Arrives on green</h3>
+          <span className={perception.glosa_active > 0 ? "thing-count live" : "thing-count"}>
+            {perception.glosa_active}
+          </span>
+        </div>
+        <p className="muted small">
+          Junctions broadcast what their lights are about to do. A car hearing “red” eases off early
+          and rolls through on green instead of racing up and stopping.
+        </p>
+        <button className="btn tiny" onClick={onFollowGlosa} disabled={!glosaCar}>
+          {glosaCar ? `Follow ${glosaCar}` : "Nobody approaching a red yet"}
+        </button>
+      </div>
+
+      <button className="btn primary wide" onClick={onTrigger}>
+        🚶 Try it — step someone into the road
+      </button>
+    </div>
+  );
+}
+
+/**
+ * Who can see the pedestrian, and who only knows because they were told.
+ *
+ * This is the clearest thing on the page: the second list is made entirely of
+ * cars that would have driven into a blind corner without the radio.
+ */
+function PedestrianInspector({ state }: { state: SimulationState }) {
+  return (
+    <div className="panel">
+      <h2>On the crossing</h2>
+      {state.pedestrians.map((ped) => (
+        <div key={ped.id} className="ped-row">
+          <p className="small">
+            Someone is crossing <strong>{road(ped.segment_id)}</strong> — {ped.ticks_remaining} ticks
+            until they are clear.
+          </p>
+          <dl className="kv">
+            <div>
+              <dt>Can see them</dt>
+              <dd>{ped.seen_by.length ? ped.seen_by.join(", ") : "nobody"}</dd>
+            </div>
+            <div>
+              <dt>Told by radio</dt>
+              <dd className={ped.known_by.length ? "good-text" : ""}>
+                {ped.known_by.length ? ped.known_by.join(", ") : "—"}
+              </dd>
+            </div>
+          </dl>
+          {ped.known_by.length > 0 && (
+            <p className="muted small">
+              Those cars are slowing for someone they have no line of sight to. Without the radio
+              they would arrive at this corner at full speed.
+            </p>
+          )}
+        </div>
+      ))}
     </div>
   );
 }
@@ -231,6 +392,10 @@ function VehicleInspector({ state, vehicleId }: { state: SimulationState; vehicl
       <p className="muted small">
         Recently sent {sent.length}, received {heard.length}.{" "}
         {v.yielding ? "Currently pulling over for an emergency vehicle." : ""}
+        {v.braking ? " Braking hard and telling the traffic behind." : ""}
+        {v.glosa_advice != null
+          ? ` Holding ${Math.round(v.glosa_advice)} km/h to reach the next junction on green.`
+          : ""}
       </p>
       <p className="muted small">
         The identity above rotates on a timer, so an observer at the roadside sees a stream of

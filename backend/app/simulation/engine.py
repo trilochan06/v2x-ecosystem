@@ -38,7 +38,7 @@ from app.simulation.fog import FogNode, build_fog_clusters
 from app.simulation.rsu import RSU
 from app.simulation.traffic_light import TrafficLight
 from app.simulation.vehicle import Vehicle, VehicleKind
-from app.simulation.world import HAZARD_TYPES, CityGrid, node_id
+from app.simulation.world import HAZARD_TYPES, CityGrid, Pedestrian, node_id
 
 MAX_EVENTS = 150
 FOG_CLUSTER_SIZE = 3
@@ -54,6 +54,8 @@ SPAT_BROADCAST_INTERVAL_TICKS = 4
 SIGNAL_REQUEST_TTL_HOPS = 2
 #: How many recent frames the street-level view can replay.
 TRANSMISSION_LOG_LIMIT = 60
+#: How long a pedestrian stays on the crossing.
+PEDESTRIAN_CROSSING_TICKS = 10
 
 
 @dataclass
@@ -102,6 +104,12 @@ class SimulationEngine:
         #: hop rather than a running total, so it needs sender and receivers.
         #: Bounded so a long session cannot grow the snapshot without limit.
         self.transmissions: list[dict] = []
+        #: Vulnerable road users currently on a crossing.
+        self.pedestrians: dict[str, Pedestrian] = {}
+        self._pedestrian_counter = itertools.count(1)
+        #: Counts for the collective-perception story: how often a vehicle
+        #: acted on a pedestrian it could not itself see.
+        self.perception_stats = {"shared": 0, "warned_blind": 0, "brake_warnings": 0}
         self.event_log: list[dict] = []
 
         self.cloud_online = True
@@ -174,6 +182,73 @@ class SimulationEngine:
         elif kind == "malicious":
             self._log("malicious_spawned", f"Attacker {vid} joined and is injecting false hazards.")
         return v
+
+    def despawn_vehicle(self) -> str | None:
+        """Take a car off the road.
+
+        Density is something a viewer needs to be able to dial: a map with
+        twenty-six dots on it measures well and reads badly. Ordinary cars go
+        first -- removing the ambulance somebody just dispatched, or the
+        attacker they are watching, would be its own kind of confusing.
+        """
+        ordinary = [v for v in self.vehicles.values() if v.kind == "car"]
+        pool = ordinary or list(self.vehicles.values())
+        if not pool:
+            return None
+        victim = pool[-1]
+        del self.vehicles[victim.id]
+        # Otherwise the RSU it was homed to keeps counting it as served.
+        self.rsu_network.vehicle_cell.pop(victim.id, None)
+        return victim.id
+
+    def set_vehicle_count(self, target: int) -> int:
+        """Add or remove ordinary cars until the city holds `target` vehicles."""
+        wanted = max(1, int(target))
+        while len(self.vehicles) < wanted:
+            self.spawn_vehicle("car")
+        while len(self.vehicles) > wanted and self.despawn_vehicle() is not None:
+            pass
+        self._log("density", f"Traffic set to {len(self.vehicles)} vehicles.")
+        return len(self.vehicles)
+
+    def spawn_pedestrian(self, node: str | None = None) -> str | None:
+        """Put a pedestrian on a crossing at `node`.
+
+        Chooses an intersection that has traffic on at least one approach,
+        because a pedestrian nobody is driving towards demonstrates nothing.
+        """
+        if node is None:
+            busy = [
+                n
+                for n in self.grid.nodes
+                if any(v.next_node == n or v.node == n for v in self.vehicles.values())
+            ]
+            node = self.rng.choice(busy or list(self.grid.nodes))
+        neighbours = self.grid.neighbors(node)
+        if not neighbours:
+            return None
+
+        # Prefer a crossing somebody is actually driving along. A pedestrian
+        # on a road with no traffic demonstrates nothing: nobody can see them,
+        # so nobody shares them and nobody brakes.
+        candidates = [self.grid.segment_between(node, n) for n in neighbours]
+        occupied = [
+            seg
+            for seg in candidates
+            if any(v.current_segment_id == seg.id for v in self.vehicles.values())
+        ]
+        crossing = self.rng.choice(occupied or candidates)
+
+        pid = f"ped-{next(self._pedestrian_counter)}"
+        self.pedestrians[pid] = Pedestrian(
+            id=pid,
+            node=node,
+            segment_id=crossing.id,
+            ticks_remaining=PEDESTRIAN_CROSSING_TICKS,
+            started_tick=self.tick,
+        )
+        self._log("pedestrian", f"Pedestrian stepped onto the crossing at {node}.")
+        return pid
 
     def toggle_rsu(self, rsu_id: str, alive: bool) -> None:
         if rsu_id not in self.rsus:
@@ -250,6 +325,7 @@ class SimulationEngine:
         self._process_reports(service_up)
         self._run_edge_and_learning()
         self._run_infrastructure(service_up)
+        self._pedestrian_lifecycle()
         self._hazard_lifecycle()
         self._sample_metrics(service_up)
 
@@ -322,6 +398,8 @@ class SimulationEngine:
                 intended, len(delivered), msg.size_bytes, msg.spec.designator
             )
             self._record_transmission(msg, sender.node, delivered, intended)
+            if msg.type == MessageType.CPM:
+                self.perception_stats["shared"] += 1
 
             for node_id_ in delivered:
                 if not self._admit(node_id_, msg):
@@ -344,6 +422,22 @@ class SimulationEngine:
                         peer.receive_occupancy_ping(
                             msg.payload["segment_id"], msg.payload["occupancy"], self.tick
                         )
+                elif msg.type == MessageType.CPM:
+                    # A peer's sensors saw a road user. The receiver now knows
+                    # about someone it may have no way of seeing itself.
+                    peer = self.vehicles.get(node_id_)
+                    if peer is not None:
+                        segment_id = str(msg.payload["segment_id"])
+                        blind = not peer.knows_pedestrian_on(segment_id, self.tick)
+                        peer.receive_perceived_object(segment_id, self.tick)
+                        if blind and peer.pedestrian_known_only_from_peers(segment_id, self.tick):
+                            self.perception_stats["warned_blind"] += 1
+                elif msg.type == MessageType.DENM_EEBL:
+                    peer = self.vehicles.get(node_id_)
+                    if peer is not None:
+                        peer.receive_hazard_warning(str(msg.payload["segment_id"]), self.tick)
+                        self.perception_stats["brake_warnings"] += 1
+
 
         if not self.config.v2v_enabled:
             for due_tick, sender_id, msg in list(self._cloud_inbox):
@@ -555,7 +649,12 @@ class SimulationEngine:
                 ttl=1,
                 created_tick=self.tick,
             )
-            self._put_on_air(frame, light.node, recipients)
+            # Transmitting is not delivering: hand the phase to every vehicle
+            # that actually decoded the frame, or GLOSA has nothing to act on.
+            for receiver in self._put_on_air(frame, light.node, recipients):
+                peer = self.vehicles.get(receiver)
+                if peer is not None:
+                    peer.receive_signal_phase(light.node, light.phase, self.tick)
 
     def _exchange_signal_priority(self) -> None:
         """SREM out, SSEM back (TS 103 301).
@@ -678,6 +777,41 @@ class SimulationEngine:
                 continue
             self._put_on_air(frame, origin.node, recipients)
 
+    def _pedestrian_lifecycle(self) -> None:
+        """Age pedestrians off the crossing, then work out who can see them.
+
+        Line of sight is the whole mechanic. A vehicle travelling *along* the
+        segment being crossed has a clear view down the road. A vehicle about
+        to turn into that crossing from a perpendicular street does not --
+        the corner is in the way. That asymmetry is what makes collective
+        perception worth the bandwidth, and it is the turning case from the
+        Porsche prototypes.
+        """
+        for pid, ped in list(self.pedestrians.items()):
+            ped.step()
+            if not ped.active:
+                del self.pedestrians[pid]
+
+        for vehicle in self.vehicles.values():
+            vehicle.seen_pedestrians = {
+                ped.segment_id: self.tick
+                for ped in self.pedestrians.values()
+                if self._has_line_of_sight(vehicle, ped)
+            }
+            # Anyone who can see a pedestrian in their own path brakes for
+            # them, which is what generates the emergency brake warning.
+            if vehicle.current_segment_id in vehicle.seen_pedestrians:
+                vehicle.brake_hard()
+
+    def _has_line_of_sight(self, vehicle: Vehicle, ped) -> bool:
+        """Can this vehicle physically see this pedestrian?
+
+        Only from on the crossing segment itself. Approaching the same
+        intersection down a different street does not count -- that vehicle
+        is turning blind.
+        """
+        return vehicle.current_segment_id == ped.segment_id
+
     def _hazard_lifecycle(self) -> None:
         if self.auto_hazards and self.rng.random() < HAZARD_SPAWN_PROBABILITY:
             self.inject_hazard()
@@ -745,6 +879,25 @@ class SimulationEngine:
             "alerts": self.alerts.snapshot(),
             "metrics": self.metrics.summary(),
             "active_corridors": list(self.corridor_mgr.active_corridors.keys()),
+            "pedestrians": [
+                ped.to_state(
+                    seen_by=sorted(
+                        v.id for v in self.vehicles.values() if self._has_line_of_sight(v, ped)
+                    ),
+                    known_by=sorted(
+                        v.id
+                        for v in self.vehicles.values()
+                        if v.pedestrian_known_only_from_peers(ped.segment_id, self.tick)
+                    ),
+                )
+                for ped in self.pedestrians.values()
+            ],
+            "perception": {
+                **self.perception_stats,
+                "glosa_active": sum(
+                    1 for v in self.vehicles.values() if v.glosa_advice is not None
+                ),
+            },
             "signal_priority": {
                 **self.signal_requests,
                 "grant_rate_pct": round(

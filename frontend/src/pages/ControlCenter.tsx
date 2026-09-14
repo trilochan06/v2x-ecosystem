@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { commands, switchArchitecture, useSimulation } from "../sim/runtime";
+import { DENSITIES, commands, switchArchitecture, useSimulation } from "../sim/runtime";
 import { CONFIGS } from "../sim/engine";
 import { CityMap } from "../components/CityMap";
 import { ExplainPanel } from "../components/ExplainPanel";
@@ -12,6 +12,10 @@ import type { ArchitectureConfigState, SimulationState } from "../types";
 export function ControlCenter() {
   const { state, connected } = useSimulation();
   const [selectedSegment, setSelectedSegment] = useState<string | null>(null);
+  /** Hide the side column and give the map the whole page. The map is the
+   *  thing people came to look at; at 1fr next to a 360px column on a laptop
+   *  it is too small to read. */
+  const [wideMap, setWideMap] = useState(false);
   const configs: ArchitectureConfigState[] = Object.values(CONFIGS);
   const busy = false;
   const { toasts, push, dismiss } = useToaster();
@@ -27,6 +31,20 @@ export function ControlCenter() {
     }
     setSelectedSegment(segmentId);
     push(`Hazard injected on ${readable(segmentId)} — watch it turn amber when peers corroborate it.`, "warn");
+  };
+
+  const onPedestrian = () => {
+    const segmentId = commands.spawnPedestrian();
+    if (!segmentId) {
+      push("No crossing with traffic on it right now.", "warn");
+      return;
+    }
+    setSelectedSegment(segmentId);
+    push(
+      `Pedestrian on ${readable(segmentId)} — the car that can see them brakes and shares them over CPM, ` +
+        `so cars with no line of sight slow too.`,
+      "warn",
+    );
   };
 
   const onSpawn = (kind: "car" | "ambulance" | "malicious") => {
@@ -119,10 +137,34 @@ export function ControlCenter() {
             warn={state.signal_priority.grant_rate_pct < 80}
           />
         )}
+        {/* Collective perception: cars warned about someone they cannot see. */}
+        {state.perception.shared > 0 && (
+          <Stat label="Warned unsighted" value={state.perception.warned_blind} />
+        )}
       </div>
 
-      <div className="control-body">
+      <div className={wideMap ? "control-body wide" : "control-body"}>
         <section className="map-panel">
+          <div className="map-tools">
+            <div className="density" role="group" aria-label="Traffic density">
+              <span className="density-label">Traffic</span>
+              {DENSITIES.map((d) => (
+                <button
+                  key={d.label}
+                  className={state.vehicles.length === d.vehicles ? "chip active" : "chip"}
+                  onClick={() => {
+                    const n = commands.setVehicleCount(d.vehicles);
+                    push(`${d.label} — ${n} vehicles on the map.`, "info");
+                  }}
+                >
+                  {d.label}
+                </button>
+              ))}
+            </div>
+            <button className="chip" onClick={() => setWideMap((w) => !w)}>
+              {wideMap ? "⇤ Show panels" : "⇥ Widen map"}
+            </button>
+          </div>
           <CityMap state={state} selectedSegment={selectedSegment} onSelectSegment={setSelectedSegment} />
           <div className="legend">
             <span><i className="dot" style={{ background: "#7dd3fc" }} /> vehicle</span>
@@ -144,6 +186,7 @@ export function ControlCenter() {
             <h2>Scenario controls</h2>
             <div className="btn-col">
               <button disabled={busy} onClick={onInjectHazard}>Inject road hazard</button>
+              <button disabled={busy} onClick={onPedestrian}>Pedestrian on a crossing</button>
               <button disabled={busy} onClick={() => onSpawn("ambulance")}>Dispatch ambulance</button>
               <button disabled={busy} onClick={() => onSpawn("malicious")}>Inject attacker</button>
               <button disabled={busy} onClick={() => onSpawn("car")}>Add vehicle</button>

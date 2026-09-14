@@ -254,6 +254,30 @@ export function CityMap({ state, selectedSegment, onSelectSegment }: Props) {
       {state.vehicles.map((v) => (
         <VehicleIcon key={v.id} v={v} justRerouted={justRerouted.has(v.id)} />
       ))}
+
+      {/* Pedestrians, drawn over the traffic. The dashed halo means cars that
+          cannot see them have still been told by radio. */}
+      {(state.pedestrians ?? []).map((ped) => {
+        const [a, b] = ped.segment_id.split("_");
+        const far = a === ped.node ? b : a;
+        const [nx, ny] = nodeXY(ped.node);
+        const [fx, fy] = nodeXY(far);
+        const x = nx + (fx - nx) * 0.3;
+        const y = ny + (fy - ny) * 0.3;
+        return (
+          <g key={ped.id} transform={`translate(${x} ${y})`}>
+            <circle r={9} fill="#facc15" opacity={0.22} className="incident-pulse" />
+            {ped.known_by.length > 0 && (
+              <circle r={13} fill="none" stroke="#facc15" strokeWidth={1.2} strokeDasharray="2 3" opacity={0.9} />
+            )}
+            <circle r={3} fill="#fefce8" stroke="#0b1120" strokeWidth={0.8} />
+            <title>
+              Pedestrian on {ped.segment_id.replace("_", " → ")} · {ped.seen_by.length} can see them,{" "}
+              {ped.known_by.length} told by radio
+            </title>
+          </g>
+        );
+      })}
     </svg>
   );
 }
