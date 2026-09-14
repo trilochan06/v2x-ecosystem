@@ -199,7 +199,8 @@ describe("experiment suite", () => {
     const suite = runSuite("normal", 60, 99, 2);
     expect(suite.repeats).toBe(2);
     expect(suite.seeds).toEqual([99, 100]);
-    expect(suite.aggregates).toHaveLength(3);
+    // Four architectures: Exp 4 adds intent coordination to Exp 3.
+    expect(suite.aggregates).toHaveLength(4);
     expect(suite.headline.message_overhead.samples).toBe(2);
     expect(suite.headline.message_overhead).toHaveProperty("separated");
   });
@@ -211,10 +212,10 @@ describe("experiment suite", () => {
   it("reports progress as it goes, because the suite blocks the main thread", () => {
     const seen: number[] = [];
     runSuite("normal", 30, 5, 2, (done, total) => {
-      expect(total).toBe(6);
+      expect(total).toBe(8); // 4 configurations x 2 seeds
       seen.push(done);
     });
-    expect(seen).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(seen).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
   });
 
   it("aggregates every tracked metric", () => {

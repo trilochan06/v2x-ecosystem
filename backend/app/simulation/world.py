@@ -14,6 +14,7 @@ precision/recall would be tautologically perfect, and the deck's
 """
 from __future__ import annotations
 
+import heapq
 import math
 from dataclasses import dataclass, field
 
@@ -202,6 +203,56 @@ class CityGrid:
         if avoid_segment_ids:
             return self.shortest_path_avoiding(start, goal, avoid_segment_ids=frozenset())
         return [start]
+
+    def least_cost_path(self, start: str, goal: str, segment_cost) -> list[str]:
+        """Cheapest path under an arbitrary per-segment cost (Dijkstra).
+
+        `shortest_path_avoiding` is a breadth-first search, so every vehicle
+        with a similar position and destination gets the identical detour --
+        which is exactly how greedy rerouting stampedes a whole platoon onto
+        one alternative. A weighted search lets a vehicle price a road by how
+        many peers have already announced they are taking it.
+
+        Returns [] when the goal is unreachable under this cost, so the caller
+        can fall back rather than silently accept a bad route.
+        """
+        if start == goal:
+            return [start]
+
+        best: dict[str, float] = {start: 0.0}
+        came_from: dict[str, str] = {}
+        # heapq orders on the tuple; the node id breaks ties deterministically
+        # so a run stays reproducible from its seed.
+        frontier: list[tuple[float, str]] = [(0.0, start)]
+        settled: set[str] = set()
+
+        while frontier:
+            cost, node = heapq.heappop(frontier)
+            if node in settled:
+                continue
+            settled.add(node)
+            if node == goal:
+                break
+            for nxt in self.adjacency[node]:
+                if nxt in settled:
+                    continue
+                step = segment_cost(self.segment_between(node, nxt))
+                if step is None or step == math.inf:
+                    continue
+                candidate = cost + step
+                if candidate < best.get(nxt, math.inf):
+                    best[nxt] = candidate
+                    came_from[nxt] = node
+                    heapq.heappush(frontier, (candidate, nxt))
+
+        if goal not in came_from:
+            return []
+
+        path = [goal]
+        while path[-1] != start:
+            path.append(came_from[path[-1]])
+        path.reverse()
+        return path
 
     def all_segments(self) -> list[Segment]:
         return list(self.segments.values())

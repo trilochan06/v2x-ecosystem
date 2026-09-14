@@ -42,6 +42,31 @@ const CRASH_REPORT_INTERVAL_TICKS = 3;
 /** What a wreck does to the lane it is sitting in. */
 const CRASH_LANE_BLOCKAGE = 0.25;
 const REROUTE_LOOKAHEAD_HOPS = 3;
+
+// --- M6b: intent coordination
+/** How often a vehicle announces where it is planning to go. */
+const INTENT_BROADCAST_INTERVAL_TICKS = 5;
+/** How far ahead it commits to. Announcing the whole route would be both a
+ *  privacy giveaway and stale by the time it mattered. */
+const INTENT_HORIZON_HOPS = 4;
+/** A claim older than this is no longer evidence of anyone's plan. */
+const INTENT_STALE_TICKS = 12;
+/** How much one peer's claim inflates a road's cost. */
+const INTENT_CLAIM_WEIGHT = 0.6;
+/** A warned-about road is priced as very expensive rather than banned, so it
+ *  stays available when every alternative is worse. */
+const AVOID_SEGMENT_PENALTY = 12;
+/**
+ * Per-vehicle route jitter, and the reason this mechanism works at all.
+ *
+ * Every road here is the same length, so the shortest-path search is really
+ * minimising hop count and ties are everywhere. Break those ties the same way
+ * in every vehicle — which both a breadth-first search and a plain Dijkstra do
+ * — and two cars in the same place heading the same way compute the
+ * byte-identical detour. That is the herding effect at its source: not bad
+ * pricing, just determinism.
+ */
+const ROUTE_JITTER = 0.25;
 const HAZARD_SENSE_PROBABILITY = 0.6;
 const LOOKAHEAD_SENSE_PROBABILITY = 0.3;
 const SENSOR_NOISE_PROBABILITY = 0.004;
@@ -70,6 +95,13 @@ export class Vehicle {
    *  immobile, blocking its lane, and announcing the accident. */
   crashedTicks = 0;
   crashedAtTick = -1;
+  // --- M6b: intent coordination
+  /** What peers have announced they intend to drive. Written only by
+   *  `receiveIntent`, so like every other peer belief it exists because a
+   *  frame was actually delivered. */
+  peerIntent = new Map<string, { claims: number; tick: number }>();
+  /** Set by the engine from the architecture config. */
+  intentCoordination = false;
   tripStartedTick = 0;
   /** Peer-shared knowledge only — written solely by receiveOccupancyPing, so
    *  rerouting is a genuine decentralized decision rather than a read of
@@ -188,6 +220,12 @@ export class Vehicle {
 
       const ping = this.maybeShareOccupancy(seg, tick);
       if (ping) outbound.push(ping);
+
+      if (this.intentCoordination) {
+        const intent = this.maybeShareIntent(tick);
+        if (intent) outbound.push(intent);
+      }
+
       if (allowRerouting) rerouted = this.maybeReroute(tick);
     }
 
@@ -233,6 +271,69 @@ export class Vehicle {
       createdTick: tick,
       signed: true,
     });
+  }
+
+  // --------------------------------------------- M6b intent coordination
+  /** The next few roads this vehicle is planning to drive. */
+  intendedSegments(): string[] {
+    const out: string[] = [];
+    const horizon = this.route.slice(0, INTENT_HORIZON_HOPS + 1);
+    for (let i = 0; i < horizon.length - 1; i++)
+      out.push(this.grid.segmentBetween(horizon[i], horizon[i + 1]).id);
+    return out;
+  }
+
+  /** MCM: announce the plan, so peers can avoid all picking it.
+   *
+   *  This is the message that makes coordination possible without any central
+   *  assignment: nobody is told where to go, only where everyone else is
+   *  already going. */
+  maybeShareIntent(tick: number): Message | null {
+    if (tick % INTENT_BROADCAST_INTERVAL_TICKS !== 0 || this.kind === "malicious") return null;
+    const planned = this.intendedSegments();
+    if (!planned.length) return null;
+    return makeMessage({
+      type: "mcm",
+      senderId: this.id,
+      pseudonym: this.pseudonym,
+      payload: { segments: planned.join(","), hops: planned.length },
+      ttl: 2,
+      createdTick: tick,
+      signed: true,
+      // Announcing a longer plan costs more air time, so the horizon is a real
+      // trade rather than free foresight.
+      variableBytes: planned.length * PATH_POINT_BYTES,
+    });
+  }
+
+  receiveIntent(segmentIds: string[], tick: number) {
+    for (const segId of segmentIds) {
+      const prior = this.peerIntent.get(segId);
+      const fresh = prior && tick - prior.tick <= INTENT_STALE_TICKS ? prior.claims : 0;
+      this.peerIntent.set(segId, { claims: fresh + 1, tick });
+    }
+  }
+
+  /** How many peers have recently said they are taking this road. */
+  claimedByPeers(segmentId: string, tick: number): number {
+    const entry = this.peerIntent.get(segmentId);
+    if (!entry || tick - entry.tick > INTENT_STALE_TICKS) return 0;
+    return entry.claims;
+  }
+
+  /** A stable per-vehicle, per-road perturbation in [0, ROUTE_JITTER).
+   *
+   *  Deterministic from the ids so a run stays reproducible from its seed,
+   *  while different vehicles disagree about which of two equal-length roads
+   *  to prefer. */
+  private routeJitter(segmentId: string): number {
+    const key = `${this.id}|${segmentId}`;
+    let h = 2166136261;
+    for (let i = 0; i < key.length; i++) {
+      h ^= key.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return (ROUTE_JITTER * ((h >>> 0) % 1000)) / 1000;
   }
 
   // --------------------------------------------------------- collision
@@ -435,7 +536,7 @@ export class Vehicle {
     }
     if (!avoid.size) return false;
 
-    const newRoute = this.grid.shortestPathAvoiding(this.node, this.destination, avoid);
+    const newRoute = this.detour(avoid, tick);
     if (newRoute.length && newRoute.join() !== this.route.join()) {
       this.route = newRoute;
       this.rerouteCooldownUntil = tick + REROUTE_COOLDOWN_TICKS;
@@ -443,6 +544,34 @@ export class Vehicle {
       return true;
     }
     return false;
+  }
+
+  /**
+   * Pick a way around the roads this vehicle has been warned about.
+   *
+   * Without coordination this is a breadth-first search, so two vehicles in
+   * the same place heading the same way get byte-identical detours — and a
+   * whole platoon arrives on the same alternative at once. That is the herding
+   * effect, and it is why greedy rerouting can be *worse* than not rerouting.
+   *
+   * With coordination the same search is weighted by what peers have
+   * announced, and tie-broken per vehicle. Public so the tests can show the
+   * herding and its fix directly.
+   */
+  detour(avoid: Set<string>, tick: number): string[] {
+    if (!this.intentCoordination)
+      return this.grid.shortestPathAvoiding(this.node, this.destination, avoid);
+
+    const cost = (seg: Segment) =>
+      seg.lengthM *
+      (avoid.has(seg.id) ? AVOID_SEGMENT_PENALTY : 1) *
+      (1 + INTENT_CLAIM_WEIGHT * this.claimedByPeers(seg.id, tick)) *
+      (1 + this.routeJitter(seg.id));
+
+    const route = this.grid.leastCostPath(this.node, this.destination, cost);
+    // Unreachable under this cost (it should not be, since nothing is banned
+    // outright) — fall back rather than strand the vehicle.
+    return route.length ? route : this.grid.shortestPathAvoiding(this.node, this.destination, avoid);
   }
 
   toState() {

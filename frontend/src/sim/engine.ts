@@ -258,6 +258,24 @@ export const CONFIGS: Record<string, ArchitectureConfigState> = {
     cloud_round_trip_ticks: 0,
     cloud_dependent: false,
   },
+  // Exp 3 with one variable changed and nothing else, so any difference in the
+  // results is attributable to intent coordination rather than to a bundle of
+  // changes moving together. It ships disabled — see the README for why.
+  exp4_coordinated: {
+    key: "exp4_coordinated",
+    label: "Exp 4 — Proposed + intent coordination",
+    summary:
+      "Exp 3, plus vehicles announcing where they intend to go (MCM) so a detour is priced by how many peers have already claimed it. Tests whether coordination beats the greedy rerouting that stampedes a platoon onto one alternative.",
+    v2v_enabled: true,
+    rsu_edge_ai: true,
+    federated_learning: true,
+    digital_twin_sync: true,
+    predictive_rerouting: true,
+    emergency_corridor: true,
+    intent_coordination: true,
+    cloud_round_trip_ticks: 0,
+    cloud_dependent: false,
+  },
 };
 
 // -------------------------------------------------------------- engine
@@ -390,6 +408,7 @@ export class SimulationEngine {
     const node = this.rng.pick([...this.grid.nodes.keys()]);
     const id = `${kind}-${this.vehicleCounter++}`;
     const v = new Vehicle(id, kind, this.grid, node, kind === "ambulance" ? 55 : 42, this.rng, this.tick);
+    v.intentCoordination = Boolean(this.config.intent_coordination);
     v.pseudonym = this.authority.enroll(id, this.tick).pseudonym;
     this.vehicles.set(id, v);
     this.trust.register(id);
@@ -727,6 +746,12 @@ export class SimulationEngine {
             if (blind && peer.pedestrianKnownOnlyFromPeers(segmentId, this.tick))
               this.perceptionStats.warnedBlind += 1;
           }
+        } else if (msg.type === "mcm") {
+          // A peer said where it is going. This is the only channel that makes
+          // coordinated rerouting possible, and like every other belief it is
+          // written only on delivery.
+          const planned = String(msg.payload.segments ?? "");
+          if (planned) this.vehicles.get(nodeIdent)?.receiveIntent(planned.split(","), this.tick);
         } else if (msg.type === "denm-eebl") {
           const peer = this.vehicles.get(nodeIdent);
           if (peer) {

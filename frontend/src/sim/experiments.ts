@@ -93,7 +93,9 @@ export function runExperiment(
   } as ExperimentRun;
 }
 
-const CONFIG_KEYS = ["exp1_centralized", "exp2_v2x_no_edge_ai", "exp3_full"];
+// Exp 4 differs from Exp 3 in exactly one flag, so the comparison isolates
+// intent coordination rather than a bundle of changes moving together.
+export const CONFIG_KEYS = ["exp1_centralized", "exp2_v2x_no_edge_ai", "exp3_full", "exp4_coordinated"];
 
 /** Seeds per configuration. One seed is a sample, not a result. */
 export const DEFAULT_REPEATS = 3;

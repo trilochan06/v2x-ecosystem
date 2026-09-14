@@ -143,6 +143,10 @@ export interface ArchitectureConfigState {
   digital_twin_sync: boolean;
   predictive_rerouting: boolean;
   emergency_corridor: boolean;
+  /** Vehicles announce their planned route (MCM) and price a detour by how
+   *  many peers have claimed it. Off in the proposed architecture — see the
+   *  README for the measurement that rejected it. */
+  intent_coordination?: boolean;
   cloud_round_trip_ticks: number;
   cloud_dependent: boolean;
 }

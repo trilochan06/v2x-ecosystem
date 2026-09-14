@@ -96,7 +96,7 @@ def test_suite_reports_intervals_and_reuses_the_same_seeds_everywhere():
 
     assert suite["repeats"] == 2
     assert suite["seeds"] == [99, 100]
-    assert len(suite["aggregates"]) == 3
+    assert len(suite["aggregates"]) == 4
 
     overhead = suite["headline"]["message_overhead"]
     assert overhead["samples"] == 2

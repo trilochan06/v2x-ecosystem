@@ -102,5 +102,6 @@ def test_experiment_sweep_endpoint():
     res = client.post("/api/experiments/run", json={"scenario": "normal", "ticks": 120, "seed": 5})
     assert res.status_code == 200
     body = res.json()
-    assert len(body["runs"]) == 3
+    # Four architectures now: Exp 4 adds intent coordination to Exp 3.
+    assert len(body["runs"]) == 4
     assert "headline" in body

@@ -10,9 +10,14 @@ def suite():
     return run_suite("normal", ticks=160, seed=4242)
 
 
-def test_suite_runs_all_three_configurations(suite):
+def test_suite_runs_every_configuration(suite):
     keys = [r["config"]["key"] for r in suite["runs"]]
-    assert keys == ["exp1_centralized", "exp2_v2x_no_edge_ai", "exp3_full"]
+    assert keys == [
+        "exp1_centralized",
+        "exp2_v2x_no_edge_ai",
+        "exp3_full",
+        "exp4_coordinated",
+    ]
 
 
 def test_centralized_baseline_loses_service_during_outage(suite):

@@ -1,3 +1,4 @@
+import { CONFIG_KEYS } from "./experiments";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { SweepRequest, SweepResponse } from "./experiments.worker";
@@ -47,7 +48,9 @@ export function useSweep() {
         suite: null,
         running: true,
         done: 0,
-        total: 3 * request.repeats,
+        // One run per configuration per seed — derived, so adding a
+        // configuration cannot silently desynchronise the progress bar.
+        total: CONFIG_KEYS.length * request.repeats,
         error: null,
       });
 

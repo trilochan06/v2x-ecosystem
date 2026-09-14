@@ -13,7 +13,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.config import CONFIGS, EXP1_CENTRALIZED, EXP2_V2X_NO_EDGE_AI, EXP3_FULL, ArchitectureConfig
+from app.config import (
+    CONFIGS,
+    EXP1_CENTRALIZED,
+    EXP2_V2X_NO_EDGE_AI,
+    EXP3_FULL,
+    EXP4_COORDINATED,
+    ArchitectureConfig,
+)
 from app.simulation.engine import SimulationEngine
 from app.stats import Estimate, separated, summarize
 
@@ -163,7 +170,7 @@ def run_suite(
     seed: int = DEFAULT_SEED,
     repeats: int = DEFAULT_REPEATS,
 ) -> dict:
-    """Run all three architectures over `repeats` seeds each.
+    """Run all four architectures over `repeats` seeds each.
 
     Every configuration sees the *same* set of seeds, so a difference between
     them cannot come from one having drawn an easier run.
@@ -172,7 +179,9 @@ def run_suite(
     repeats = max(1, min(repeats, MAX_REPEATS))
     seeds = [seed + i for i in range(repeats)]
 
-    configs = (EXP1_CENTRALIZED, EXP2_V2X_NO_EDGE_AI, EXP3_FULL)
+    # Exp 4 differs from Exp 3 in exactly one flag, so the comparison isolates
+    # intent coordination rather than a bundle of changes moving together.
+    configs = (EXP1_CENTRALIZED, EXP2_V2X_NO_EDGE_AI, EXP3_FULL, EXP4_COORDINATED)
     by_config = [[run_experiment(cfg, scenario, ticks=ticks, seed=s) for s in seeds] for cfg in configs]
 
     aggregates = [aggregate_runs(runs) for runs in by_config]

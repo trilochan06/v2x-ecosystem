@@ -21,10 +21,12 @@ not remote knowledge.
 from __future__ import annotations
 
 import random
+import zlib
 from dataclasses import dataclass, field
 from typing import Literal
 
 from app.network.messages import (
+    PATH_POINT_BYTES,
     PERCEIVED_OBJECT_BYTES,
     Message,
     MessageType,
@@ -64,6 +66,34 @@ PEDESTRIAN_CAUTION_FACTOR = 0.45
 # Below this share of the segment remaining, a signal is close enough that
 # holding a speed to catch the green is worth advising.
 GLOSA_APPROACH_PROGRESS = 0.35
+
+# --- M6b: intent coordination ------------------------------------------
+# How often a vehicle announces where it is planning to go.
+INTENT_BROADCAST_INTERVAL_TICKS = 5
+# How far ahead it commits to. Announcing the whole route would be both a
+# privacy giveaway and stale by the time it mattered.
+INTENT_HORIZON_HOPS = 4
+# A claim older than this is no longer evidence of anyone's plan.
+INTENT_STALE_TICKS = 12
+# How much one peer's announced claim inflates a road's cost. At 0.6 a road
+# four peers have claimed looks ~2.4x longer than an empty one, which is
+# enough to tip the marginal vehicle onto the next-best detour without
+# making the obvious route unusable for everyone.
+INTENT_CLAIM_WEIGHT = 0.6
+# A road a peer warned about is not banned outright any more -- it is priced
+# as very expensive, so it stays available when every alternative is worse.
+AVOID_SEGMENT_PENALTY = 12.0
+# Per-vehicle route jitter, and the reason this whole mechanism works.
+#
+# Every road here is the same length, so the shortest-path search is really
+# minimising hop count and ties are everywhere. Break those ties the same way
+# in every vehicle -- which both a breadth-first search and a plain Dijkstra
+# do -- and two cars in the same place heading the same way compute the
+# byte-identical detour. That is the herding effect at its source: not bad
+# pricing, just determinism. A small per-vehicle perturbation makes tied
+# routes resolve differently for different vehicles while leaving a genuinely
+# shorter route still shorter.
+ROUTE_JITTER = 0.25
 
 # How long a wreck sits in the carriageway before it is cleared and the
 # vehicles rejoin traffic.
@@ -128,6 +158,15 @@ class Vehicle:
     crashed_ticks: int = 0
     #: Tick the collision happened, so the UI can say how long ago.
     crashed_at_tick: int = -1
+
+    # --- M6b: intent coordination ----------------------------------------
+    #: What peers have announced they intend to drive. segment_id -> (claims,
+    #: tick). Written only by `receive_intent`, so like every other peer
+    #: belief it exists because a frame was actually delivered.
+    peer_intent: dict[str, tuple[int, int]] = field(default_factory=dict)
+    #: Whether this vehicle announces its plan and prices detours by what
+    #: peers have claimed. Set by the engine from the architecture config.
+    intent_coordination: bool = False
 
     def __post_init__(self) -> None:
         if not self.destination:
@@ -246,6 +285,12 @@ class Vehicle:
             ping = self._maybe_share_occupancy(seg, tick)
             if ping is not None:
                 outbound.append(ping)
+
+            if self.intent_coordination:
+                intent = self._maybe_share_intent(tick)
+                if intent is not None:
+                    outbound.append(intent)
+
             if allow_rerouting:
                 rerouted = self._maybe_reroute(tick)
 
@@ -495,6 +540,63 @@ class Vehicle:
         return heard is not None and tick - heard <= PEER_INFO_STALE_TICKS
 
     # ----------------------------------------------- M6 local rerouting
+    # --------------------------------------------- M6b intent coordination
+    def intended_segments(self) -> list[str]:
+        """The next few roads this vehicle is planning to drive."""
+        out: list[str] = []
+        horizon = self.route[: INTENT_HORIZON_HOPS + 1]
+        for i in range(len(horizon) - 1):
+            out.append(self.grid.segment_between(horizon[i], horizon[i + 1]).id)
+        return out
+
+    def _maybe_share_intent(self, tick: int) -> Message | None:
+        """MCM: announce the plan, so peers can avoid all picking it.
+
+        This is the message that makes coordination possible without any
+        central assignment: nobody is told where to go, they are only told
+        where everyone else is already going.
+        """
+        if tick % INTENT_BROADCAST_INTERVAL_TICKS != 0 or self.kind == "malicious":
+            return None
+        planned = self.intended_segments()
+        if not planned:
+            return None
+        payload = {"segments": ",".join(planned), "hops": len(planned)}
+        return Message(
+            type=MessageType.MCM,
+            sender_id=self.id,
+            pseudonym=self.pseudonym,
+            payload=payload,
+            ttl=2,
+            created_tick=tick,
+            signature=sign(payload, self.signing_key),
+            # Announcing a longer plan costs more air time, so the horizon is
+            # a real trade rather than free foresight.
+            variable_bytes=len(planned) * PATH_POINT_BYTES,
+        )
+
+    def receive_intent(self, segment_ids: list[str], tick: int) -> None:
+        for seg_id in segment_ids:
+            claims, heard = self.peer_intent.get(seg_id, (0, tick))
+            fresh = claims if tick - heard <= INTENT_STALE_TICKS else 0
+            self.peer_intent[seg_id] = (fresh + 1, tick)
+
+    def _route_jitter(self, segment_id: str) -> float:
+        """A stable per-vehicle, per-road perturbation in [0, ROUTE_JITTER).
+
+        Deterministic from the ids -- crc32 rather than `hash()`, whose seed
+        varies between processes -- so a run is still reproducible from its
+        seed, while different vehicles disagree about which of two equal-length
+        roads to prefer.
+        """
+        digest = zlib.crc32(f"{self.id}|{segment_id}".encode())
+        return ROUTE_JITTER * (digest % 1000) / 1000.0
+
+    def claimed_by_peers(self, segment_id: str, tick: int) -> int:
+        """How many peers have recently said they are taking this road."""
+        claims, heard = self.peer_intent.get(segment_id, (0, -999))
+        return claims if tick - heard <= INTENT_STALE_TICKS else 0
+
     def _maybe_reroute(self, tick: int) -> bool:
         if self.kind == "ambulance":
             return False  # priority vehicles hold their path; traffic yields instead
@@ -520,13 +622,46 @@ class Vehicle:
         if not avoid:
             return False
 
-        new_route = self.grid.shortest_path_avoiding(self.node, self.destination, frozenset(avoid))
+        new_route = self._detour(frozenset(avoid), tick)
         if new_route and new_route != self.route:
             self.route = new_route
             self._reroute_cooldown_until = tick + REROUTE_COOLDOWN_TICKS
             self.reroute_count += 1
             return True
         return False
+
+    def _detour(self, avoid: frozenset[str], tick: int) -> list[str]:
+        """Pick a way around the roads this vehicle has been warned about.
+
+        Without coordination this is a breadth-first search, so two vehicles
+        in the same place heading the same way get byte-identical detours --
+        and a whole platoon arrives on the same alternative at once. That is
+        the herding effect, and it is why greedy rerouting can be *worse*
+        than not rerouting at all.
+
+        With coordination the same search is weighted by what peers have
+        announced. The first vehicles to replan take the obvious detour; once
+        enough of them have claimed it, it prices itself out and the next
+        vehicle picks the second-best road instead. No central assignment and
+        no negotiation -- just each vehicle reacting to what it was told.
+        """
+        if not self.intent_coordination:
+            return self.grid.shortest_path_avoiding(self.node, self.destination, avoid)
+
+        def cost(seg) -> float:
+            penalty = AVOID_SEGMENT_PENALTY if seg.id in avoid else 1.0
+            claims = self.claimed_by_peers(seg.id, tick)
+            return (
+                seg.length_m
+                * penalty
+                * (1.0 + INTENT_CLAIM_WEIGHT * claims)
+                * (1.0 + self._route_jitter(seg.id))
+            )
+
+        route = self.grid.least_cost_path(self.node, self.destination, cost)
+        # Unreachable under this cost (it should not be, since nothing is
+        # banned outright) -- fall back rather than strand the vehicle.
+        return route or self.grid.shortest_path_avoiding(self.node, self.destination, avoid)
 
     # -------------------------------------------------------------- views
     def to_state(self) -> dict:

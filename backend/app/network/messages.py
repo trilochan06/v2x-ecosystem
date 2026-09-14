@@ -116,6 +116,8 @@ class MessageType(StrEnum):
     #: *sensors* can see, shared so a station with a blocked view learns
     #: about a road user it cannot detect itself.
     CPM = "cpm"
+    #: Cooperative intent: where this vehicle is planning to go next.
+    MCM = "mcm"
     #: Raw probe data streamed to a central service. Not a C-ITS message.
     TELEMETRY_UPLOAD = "telemetry-upload"
 
@@ -285,6 +287,16 @@ MESSAGE_SPECS: dict[MessageType, MessageSpec] = {
         # Management + sensor information containers. The perceived objects
         # themselves are variable and ride in `variable_bytes`.
         payload_bytes=121,
+    ),
+    MessageType.MCM: MessageSpec(
+        designator="MCM",
+        standard="ETSI TR 103 578",
+        label="Maneuver coordination (intent sharing)",
+        bearer=Bearer.ITS_G5,
+        # Management + manoeuvre containers. The intended path itself is
+        # variable and rides in `variable_bytes`, one entry per planned hop,
+        # so announcing a longer plan genuinely costs more air time.
+        payload_bytes=118,
     ),
     MessageType.TELEMETRY_UPLOAD: MessageSpec(
         designator="probe",

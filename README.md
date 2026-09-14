@@ -104,8 +104,55 @@ intervals that overlap, and under heavy congestion the rerouting configurations
 are occasionally worse. That is a real finding, not an artefact: each vehicle
 reroutes greedily on peer reports, so a widely announced jam can send them all
 onto the same alternative — the herding effect congestion-responsive routing is
-known to produce in the field. Beating the baseline here needs coordinated
-assignment, which is scoped as future work.
+known to produce in the field.
+
+### Exp 4: coordinated rerouting, tested and rejected
+
+The obvious fix is coordination, so it was built and measured rather than
+assumed. **Exp 4** is Exp 3 with one flag changed: vehicles announce where they
+intend to go (an MCM, ETSI TR 103 578) and price a road by how many peers have
+already claimed it, plus a per-vehicle tie-break so identical vehicles stop
+computing identical detours.
+
+First, the herding is real and the mechanism does fix it. Six vehicles at the
+same junction heading for the same destination produce **one** detour under the
+plain search and **six distinct** detours with the tie-break. The diagnosis was
+also wrong in an instructive way: every road here is 250 m, so the search is
+really minimising hop count, and the herding came from *ties being broken
+identically in every vehicle* — determinism, not bad pricing.
+
+Fixing it did not help. Over 10 seeds at 260 ticks:
+
+| Metric | Exp 3 | Exp 4 | Separated? |
+| --- | --- | --- | --- |
+| Trips completed — normal | 24.0 ± 3.8 | 22.7 ± 4.1 | no |
+| Trips completed — congestion | 36.2 ± 8.1 | 32.6 ± 9.2 | no |
+| Avg trip time — congestion (ticks) | 102.7 ± 16.0 | 91.9 ± 11.1 | no |
+| **Local radio load — normal (KB/tick)** | **1.89 ± 0.07** | **3.18 ± 0.06** | **yes — +68%** |
+| **Local radio load — congestion (KB/tick)** | **3.06 ± 0.09** | **5.23 ± 0.08** | **yes — +71%** |
+
+**The only thing that separates is the cost.** And the point estimate gets worse
+as the network fills up — trips completed move from +1.2% at 10 vehicles to
+−7.6% at 45, monotonically:
+
+| Vehicles | Mean occupancy | Trips vs Exp 3 | Better on |
+| --- | --- | --- | --- |
+| 10 | 0.27 | +1.2% | 3/8 seeds |
+| 18 | 0.40 | −1.3% | 2/8 seeds |
+| 30 | 0.54 | −3.1% | 3/8 seeds |
+| 45 | 0.65 | −7.6% | 0/8 seeds |
+
+That gradient is the actual finding, and it has a mechanism. Spreading traffic
+only pays if the alternatives are better. In a saturated uniform grid they are
+not — every detour is longer and the roads it leads to are congested too — so
+de-correlating routes adds vehicle-kilometres without relieving anything. The
+apparent improvement in average trip time is survivorship: fewer trips finish,
+so the ones that do are the short ones.
+
+Exp 4 therefore ships **disabled** and exists only as the experiment that
+measured it. Concluding "coordination helps" from the mobility metric alone
+would have been easy — `segments_per_100_vehicle_ticks` rose 4.1% on 8/8 seeds —
+and wrong, because that metric rewards driving further rather than arriving.
 
 ## Standards
 

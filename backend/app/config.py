@@ -14,7 +14,7 @@ architecture differs.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 
 @dataclass(frozen=True)
@@ -35,6 +35,10 @@ class ArchitectureConfig:
     predictive_rerouting: bool = True
     # M10 -- predictive emergency corridor formation
     emergency_corridor: bool = True
+    # M6b -- vehicles announce where they intend to go (MCM) and price a
+    # detour by how many peers have already claimed it. Off by default: it is
+    # the variable under test, not part of the proposed baseline.
+    intent_coordination: bool = False
 
     # Extra delay (in ticks) before a decision is available, when the
     # decision has to make a cloud round trip instead of being made locally.
@@ -54,6 +58,7 @@ class ArchitectureConfig:
             "digital_twin_sync": self.digital_twin_sync,
             "predictive_rerouting": self.predictive_rerouting,
             "emergency_corridor": self.emergency_corridor,
+            "intent_coordination": self.intent_coordination,
             "cloud_round_trip_ticks": self.cloud_round_trip_ticks,
             "cloud_dependent": self.cloud_dependent,
         }
@@ -111,8 +116,23 @@ EXP3_FULL = ArchitectureConfig(
     cloud_dependent=False,
 )
 
+#: Exp 3 with one variable changed and nothing else, so any difference in the
+#: results is attributable to intent coordination rather than to a bundle of
+#: changes moving together.
+EXP4_COORDINATED = replace(
+    EXP3_FULL,
+    key="exp4_coordinated",
+    label="Exp 4 — Proposed + intent coordination",
+    summary=(
+        "Exp 3, plus vehicles announcing where they intend to go (MCM) so a detour is "
+        "priced by how many peers have already claimed it. Tests whether coordination "
+        "beats the greedy rerouting that stampedes a platoon onto one alternative."
+    ),
+    intent_coordination=True,
+)
+
 CONFIGS: dict[str, ArchitectureConfig] = {
-    cfg.key: cfg for cfg in (EXP1_CENTRALIZED, EXP2_V2X_NO_EDGE_AI, EXP3_FULL)
+    cfg.key: cfg for cfg in (EXP1_CENTRALIZED, EXP2_V2X_NO_EDGE_AI, EXP3_FULL, EXP4_COORDINATED)
 }
 
 DEFAULT_CONFIG = EXP3_FULL

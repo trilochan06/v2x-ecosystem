@@ -176,6 +176,7 @@ class SimulationEngine:
             node=node,
             speed_kmh=55.0 if kind == "ambulance" else 42.0,
             trip_started_tick=self.tick,
+            intent_coordination=self.config.intent_coordination,
         )
         cert = self.authority.enroll(vid, self.tick)
         v.pseudonym, v.signing_key = cert.pseudonym, cert.signing_key
@@ -527,6 +528,15 @@ class SimulationEngine:
                         peer.receive_perceived_object(segment_id, self.tick)
                         if blind and peer.pedestrian_known_only_from_peers(segment_id, self.tick):
                             self.perception_stats["warned_blind"] += 1
+                elif msg.type == MessageType.MCM:
+                    # A peer said where it is going. This is the only channel
+                    # that makes coordinated rerouting possible, and like
+                    # every other belief it is written only on delivery.
+                    peer = self.vehicles.get(node_id_)
+                    if peer is not None:
+                        planned = str(msg.payload.get("segments", ""))
+                        if planned:
+                            peer.receive_intent(planned.split(","), self.tick)
                 elif msg.type == MessageType.DENM_EEBL:
                     peer = self.vehicles.get(node_id_)
                     if peer is not None:

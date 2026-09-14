@@ -194,6 +194,55 @@ export class CityGrid {
     return avoid.size ? this.shortestPathAvoiding(start, goal, new Set()) : [start];
   }
 
+  /**
+   * Cheapest path under an arbitrary per-segment cost (Dijkstra).
+   *
+   * `shortestPathAvoiding` is a breadth-first search, so every vehicle with a
+   * similar position and destination gets the identical detour — which is
+   * exactly how greedy rerouting stampedes a platoon onto one alternative. A
+   * weighted search lets a vehicle price a road by how many peers have
+   * announced they are taking it.
+   *
+   * Returns [] when the goal is unreachable under this cost, so the caller can
+   * fall back rather than silently accept a bad route.
+   */
+  leastCostPath(start: string, goal: string, segmentCost: (seg: Segment) => number): string[] {
+    if (start === goal) return [start];
+
+    const best = new Map<string, number>([[start, 0]]);
+    const cameFrom = new Map<string, string>();
+    const settled = new Set<string>();
+    // A sorted array rather than a heap: these grids are small enough that the
+    // constant factor beats the extra machinery. Ties break on node id so a
+    // run stays reproducible from its seed.
+    const frontier: { cost: number; node: string }[] = [{ cost: 0, node: start }];
+
+    while (frontier.length) {
+      frontier.sort((a, b) => a.cost - b.cost || (a.node < b.node ? -1 : 1));
+      const { cost, node } = frontier.shift()!;
+      if (settled.has(node)) continue;
+      settled.add(node);
+      if (node === goal) break;
+
+      for (const nxt of this.neighbors(node)) {
+        if (settled.has(nxt)) continue;
+        const step = segmentCost(this.segmentBetween(node, nxt));
+        if (!Number.isFinite(step)) continue;
+        const candidate = cost + step;
+        if (candidate < (best.get(nxt) ?? Infinity)) {
+          best.set(nxt, candidate);
+          cameFrom.set(nxt, node);
+          frontier.push({ cost: candidate, node: nxt });
+        }
+      }
+    }
+
+    if (!cameFrom.has(goal)) return [];
+    const path = [goal];
+    while (path[path.length - 1] !== start) path.push(cameFrom.get(path[path.length - 1])!);
+    return path.reverse();
+  }
+
   /** Every other segment sharing an endpoint — the spillover neighbourhood. */
   adjacentSegments(seg: Segment): Segment[] {
     const seen = new Set([seg.id]);
@@ -234,6 +283,7 @@ export type MessageType =
   | "ssem"
   | "denm-eebl"
   | "cpm"
+  | "mcm"
   | "telemetry-upload";
 
 /** SSEM requestStatus values (TS 103 301 / SAE J2735). */
@@ -311,6 +361,16 @@ export const MESSAGE_SPECS: Record<MessageType, MessageSpec> = {
     // Management + sensor information containers. The perceived objects
     // themselves are variable and ride in variableBytes.
     payloadBytes: 121,
+  },
+  mcm: {
+    designator: "MCM",
+    standard: "ETSI TR 103 578",
+    label: "Maneuver coordination (intent sharing)",
+    bearer: "its-g5",
+    // Management + manoeuvre containers. The intended path itself is variable
+    // and rides in variableBytes, one entry per planned hop, so announcing a
+    // longer plan genuinely costs more air time.
+    payloadBytes: 118,
   },
   "telemetry-upload": {
     designator: "probe",
