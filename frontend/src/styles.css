@@ -119,8 +119,8 @@ code { font-size: 0.85em; color: var(--text-2); background: #0d1622; padding: 1p
 .band h2 { font-size: 1.45rem; margin: 0 0 8px; }
 .section-lede { color: var(--text-2); margin: 0 0 22px; max-width: 760px; }
 
-.grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
-.grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 16px; }
+.grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 16px; }
+.grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(270px, 100%), 1fr)); gap: 16px; }
 
 .card {
   background: var(--surface);
@@ -189,7 +189,7 @@ code { font-size: 0.85em; color: var(--text-2); background: #0d1622; padding: 1p
 .stat-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
 .stat.warn .stat-value { color: var(--warn); }
 
-.two-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
+.two-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr)); gap: 16px; }
 
 .data-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
 .data-table th {
@@ -316,7 +316,7 @@ button.danger { background: #2c1414; border-color: #5e2525; color: #f3a8a8; }
 .field { display: flex; flex-direction: column; gap: 5px; }
 .field label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
 
-.headline-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin-top: 12px; }
+.headline-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr)); gap: 14px; margin-top: 12px; }
 .headline { background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
 .headline-label { display: block; font-size: 0.75rem; color: var(--muted); margin-bottom: 6px; }
 .headline-value { font-size: 1.35rem; font-weight: 700; font-variant-numeric: tabular-nums; }
@@ -326,7 +326,7 @@ button.danger { background: #2c1414; border-color: #5e2525; color: #f3a8a8; }
 .delta.good { color: var(--good); }
 .delta.bad { color: var(--bad); }
 
-.chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(430px, 1fr)); gap: 16px; }
+.chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(430px, 100%), 1fr)); gap: 16px; }
 
 .chart { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; margin: 0; }
 .chart figcaption { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }
@@ -371,7 +371,7 @@ button.danger { background: #2c1414; border-color: #5e2525; color: #f3a8a8; }
 .member { display: flex; flex-direction: column; }
 
 @media (max-width: 1100px) {
-  .control-body { grid-template-columns: 1fr; }
+  .control-body { grid-template-columns: minmax(0, 1fr); }
   .hero h1 { font-size: 2rem; }
   .page { padding: 20px 16px 50px; }
   .masthead { padding: 12px 16px; }
@@ -886,3 +886,122 @@ button.danger { background: #2c1414; border-color: #5e2525; color: #f3a8a8; }
   font-style: italic;
 }
 .story-slow { margin: 10px 0 0; }
+
+/* =====================================================================
+   Home — evidence on the landing page, not just a claim
+   ===================================================================== */
+.hero-live {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  gap: 22px;
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 20px 22px;
+  margin-top: 8px;
+}
+@media (max-width: 760px) {
+  .hero-live { grid-template-columns: 1fr; }
+}
+.hero-live-map {
+  background: radial-gradient(ellipse at 50% 45%, #101b28 0%, #0a1018 72%);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px;
+}
+.live-preview { width: 100%; height: auto; display: block; }
+.hero-live-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0 0 6px;
+  font-weight: 650;
+  font-size: 0.95rem;
+}
+.hero-live-body p { margin: 0 0 10px; }
+.hero-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
+  gap: 12px 18px;
+  margin-top: 14px;
+}
+.hero-stat { display: flex; flex-direction: column; min-width: 0; }
+.hero-stat-value {
+  font-size: 1.25rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+.hero-stat-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+/* Capability cards are now doors into the system rather than paragraphs. */
+a.card.capability {
+  display: flex;
+  flex-direction: column;
+  text-decoration: none;
+  color: inherit;
+  transition: border-color .12s ease, transform .12s ease;
+}
+a.card.capability:hover { border-color: var(--accent); transform: translateY(-2px); }
+.capability-cta {
+  margin-top: auto;
+  padding-top: 12px;
+  font-size: 0.8rem;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* =====================================================================
+   Architecture — one layer at a time
+   ===================================================================== */
+.layer-hint { margin: 0 0 12px; }
+button.layer {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  transition: border-color .12s ease, background .12s ease;
+}
+button.layer:hover { border-color: var(--accent); }
+button.layer.open { border-color: var(--accent); background: #13243a; }
+.layer-name { font-size: 0.95rem; font-weight: 650; display: block; }
+.layer-components {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.layer-function {
+  display: block;
+  font-size: 0.86rem;
+  color: var(--text-2);
+  margin-top: 6px;
+  line-height: 1.5;
+}
+.layer-detail {
+  margin-top: 14px;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+.layer-detail h3 { margin: 0 0 12px; font-size: 0.95rem; text-transform: none; letter-spacing: 0; color: var(--text); }
+.layer-detail-modules { display: flex; flex-direction: column; gap: 12px; }
+.layer-module { display: flex; gap: 12px; align-items: flex-start; }
+.layer-module strong { font-size: 0.9rem; }
+.layer-module p { margin: 3px 0 0; }
+
+/* The federated page's widest table pushed the viewport at phone width. */
+@media (max-width: 760px) {
+  .kv > div { flex-wrap: wrap; gap: 2px; }
+  .headline-grid { grid-template-columns: 1fr; }
+}

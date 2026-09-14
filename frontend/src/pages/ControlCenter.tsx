@@ -272,7 +272,8 @@ function MessageMix({ state }: { state: SimulationState }) {
       {rows.length === 0 ? (
         <p className="muted small">No frames transmitted yet.</p>
       ) : (
-        <table className="data-table">
+        <div className="table-scroll">
+          <table className="data-table">
           <thead>
             <tr>
               <th>Frame</th>
@@ -294,6 +295,7 @@ function MessageMix({ state }: { state: SimulationState }) {
             ))}
           </tbody>
         </table>
+        </div>
       )}
       <p className="muted small">
         CAM is the periodic awareness heartbeat, DENM the event-driven hazard warning carrying a

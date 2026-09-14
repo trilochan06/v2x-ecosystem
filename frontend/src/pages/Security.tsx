@@ -99,7 +99,8 @@ export function Security() {
 
         <section className="panel">
           <h2>Trust scores — lowest first</h2>
-          <table className="data-table">
+          <div className="table-scroll">
+            <table className="data-table">
             <thead>
               <tr>
                 <th>Node</th>
@@ -128,6 +129,7 @@ export function Security() {
               )}
             </tbody>
           </table>
+          </div>
           <p className="muted small">
             Trust follows a vehicle's corroboration rate, but a report no other vehicle was positioned to witness is not
             scored at all — an empty road is not evidence of lying. Attackers, who fabricate hazards on clear roads that

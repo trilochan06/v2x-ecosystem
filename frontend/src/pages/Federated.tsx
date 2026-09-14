@@ -71,6 +71,7 @@ export function Federated() {
       <div className="two-col">
         <section className="panel">
           <h2>Participating edge clients</h2>
+          <div className="table-scroll">
           <table className="data-table">
             <thead>
               <tr>
@@ -95,6 +96,7 @@ export function Federated() {
               ))}
             </tbody>
           </table>
+          </div>
           <p className="muted small">
             Drift is how far a client's locally trained weights had moved from the global model before the last
             aggregation — the divergence the literature flags for highly mobile nodes.
@@ -107,6 +109,7 @@ export function Federated() {
             A linear congestion forecaster, so federated averaging is exactly the sample-weighted mean of the clients'
             parameters and can be checked by hand.
           </p>
+          <div className="table-scroll">
           <table className="data-table">
             <thead>
               <tr>
@@ -129,6 +132,7 @@ export function Federated() {
               </tr>
             </tbody>
           </table>
+          </div>
         </section>
       </div>
 

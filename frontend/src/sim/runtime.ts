@@ -30,10 +30,32 @@ export const DENSITIES = [
   { label: "Rush hour", vehicles: 34 },
 ] as const;
 
-let engine = new SimulationEngine({
-  seed: Math.floor(Math.random() * 1e9),
-  numVehicles: DEFAULT_VEHICLE_COUNT,
-});
+/**
+ * Ticks run before anybody looks, so no page is ever born empty.
+ *
+ * Without this the engine starts at tick 0 wherever you land, and the pages
+ * that read aggregate state have nothing to show: Federated Learning rendered
+ * a grid of zeros for a measured 36 seconds before its first round landed,
+ * which reads as a broken page rather than a young one. Federated rounds are
+ * every 15 ticks, incidents need corroboration, and trust needs a history — so
+ * the city arrives already having lived a little.
+ *
+ * 90 ticks costs ~70 ms once at startup and yields several federated rounds,
+ * confirmed incidents and reroutes.
+ */
+const WARM_UP_TICKS = 90;
+
+function buildEngine(config = CONFIGS.exp3_full, vehicles = DEFAULT_VEHICLE_COUNT) {
+  const next = new SimulationEngine({
+    config,
+    seed: Math.floor(Math.random() * 1e9),
+    numVehicles: vehicles,
+  });
+  for (let i = 0; i < WARM_UP_TICKS; i++) next.step();
+  return next;
+}
+
+let engine = buildEngine();
 const listeners = new Set<(s: SimulationState) => void>();
 let timer: number | undefined;
 
@@ -66,11 +88,9 @@ export function getEngine() {
 export function switchArchitecture(key: string) {
   const config = CONFIGS[key];
   if (!config) return;
-  engine = new SimulationEngine({
-    config,
-    seed: Math.floor(Math.random() * 1e9),
-    numVehicles: engine.vehicles.size || DEFAULT_VEHICLE_COUNT,
-  });
+  // Warmed too, or switching architecture would blank every page that reads
+  // aggregate state.
+  engine = buildEngine(config, engine.vehicles.size || DEFAULT_VEHICLE_COUNT);
   publish();
 }
 

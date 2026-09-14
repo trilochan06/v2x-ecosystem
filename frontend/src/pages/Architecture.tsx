@@ -1,3 +1,6 @@
+import { useState } from "react";
+import { Link } from "react-router-dom";
+
 import { CONFIGS } from "../sim/engine";
 import { REFERENCE } from "../sim/reference";
 import type { ArchitectureConfigState, ReferenceData } from "../types";
@@ -11,8 +14,21 @@ const FLAGS: { key: keyof ArchitectureConfigState; label: string }[] = [
   { key: "emergency_corridor", label: "Emergency corridor" },
 ];
 
+/** Where each layer can actually be watched working, so the traceability
+ *  table is a way into the system rather than a dead end. */
+const LAYER_DEMOS: Record<string, { to: string; label: string }> = {
+  L1: { to: "/street", label: "Watch vehicles sense the road" },
+  L2: { to: "/demo", label: "Watch a warning spread peer-to-peer" },
+  L3: { to: "/control", label: "See edge inference per roadside unit" },
+  L4: { to: "/federated", label: "Open the federated learning monitor" },
+  L5: { to: "/control", label: "See digital-twin divergence" },
+  L6: { to: "/experiments", label: "See the measured comparison" },
+};
+
 export function Architecture() {
   const ref: ReferenceData = REFERENCE;
+  const [selectedLayer, setSelectedLayer] = useState<string | null>(null);
+  const selected = ref.layers.find((l) => l.id === selectedLayer) ?? null;
   const configs: ArchitectureConfigState[] = Object.values(CONFIGS);
 
   return (
@@ -28,25 +44,67 @@ export function Architecture() {
 
       <section className="panel wide">
         <h2>Six-layer architecture</h2>
+        <p className="muted small layer-hint">
+          Pick a layer to see what implements it and where to watch it working.
+        </p>
+        {/* Every layer used to be fully expanded at once: six headings, six
+            component lists and every module pill on screen together. Selecting
+            one shows the same material at a depth a reader can follow, and
+            gives them somewhere to go next. */}
         <div className="layer-stack">
-          {ref.layers.map((layer) => (
-            <div key={layer.id} className="layer">
-              <span className="layer-id">{layer.id}</span>
-              <div className="layer-body">
-                <h3>{layer.name}</h3>
-                <p className="muted small">{layer.components}</p>
-                <p>{layer.function}</p>
-              </div>
-              <div className="layer-modules">
-                {layer.implemented_by.map((m) => (
-                  <span key={m} className="pill">
-                    {m}
-                  </span>
-                ))}
-              </div>
-            </div>
-          ))}
+          {ref.layers.map((layer) => {
+            const open = layer.id === selectedLayer;
+            return (
+              <button
+                key={layer.id}
+                aria-expanded={open}
+                className={open ? "layer open" : "layer"}
+                onClick={() => setSelectedLayer(open ? null : layer.id)}
+              >
+                <span className="layer-id">{layer.id}</span>
+                <span className="layer-body">
+                  <span className="layer-name">{layer.name}</span>
+                  {open && <span className="layer-components">{layer.components}</span>}
+                  {open && <span className="layer-function">{layer.function}</span>}
+                </span>
+                <span className="layer-modules">
+                  {layer.implemented_by.map((m) => (
+                    <span key={m} className="pill">
+                      {m}
+                    </span>
+                  ))}
+                </span>
+              </button>
+            );
+          })}
         </div>
+
+        {selected && (
+          <div className="layer-detail">
+            <h3>
+              {selected.id} · {selected.name} — what implements it
+            </h3>
+            <div className="layer-detail-modules">
+              {ref.modules
+                .filter((m) => selected.implemented_by.includes(m.id))
+                .map((m) => (
+                  <div key={m.id} className="layer-module">
+                    <span className="pill">{m.id}</span>
+                    <div>
+                      <strong>{m.name}</strong>
+                      <p className="muted small">{m.description}</p>
+                      <p className="mono-sm">{m.source}</p>
+                    </div>
+                  </div>
+                ))}
+            </div>
+            {LAYER_DEMOS[selected.id] && (
+              <Link className="btn tiny" to={LAYER_DEMOS[selected.id].to}>
+                {LAYER_DEMOS[selected.id].label} →
+              </Link>
+            )}
+          </div>
+        )}
         <p className="muted small">
           Information flows up and decisions flow back down, but no layer is a single point of failure: L1–L3 keep
           operating with L5 unreachable, which is what the outage experiment measures.
