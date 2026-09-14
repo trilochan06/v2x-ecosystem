@@ -56,6 +56,9 @@ SIGNAL_REQUEST_TTL_HOPS = 2
 TRANSMISSION_LOG_LIMIT = 60
 #: How long a pedestrian stays on the crossing.
 PEDESTRIAN_CROSSING_TICKS = 10
+#: How long a wreck keeps the road hazardous. Longer than the vehicles stay
+#: immobile, because debris outlives the recovery truck.
+CRASH_HAZARD_TTL_TICKS = 30
 
 
 @dataclass
@@ -110,6 +113,8 @@ class SimulationEngine:
         #: Counts for the collective-perception story: how often a vehicle
         #: acted on a pedestrian it could not itself see.
         self.perception_stats = {"shared": 0, "warned_blind": 0, "brake_warnings": 0}
+        #: Recent collisions, newest last, so the UI can narrate them.
+        self.collisions: list[dict] = []
         self.event_log: list[dict] = []
 
         self.cloud_online = True
@@ -182,6 +187,96 @@ class SimulationEngine:
         elif kind == "malicious":
             self._log("malicious_spawned", f"Attacker {vid} joined and is injecting false hazards.")
         return v
+
+    def trigger_collision(self, segment_id: str | None = None) -> dict | None:
+        """Stage a real collision between two vehicles.
+
+        This is the most watchable thing the system does, because one event
+        chains four modules together: both wrecks broadcast, the traffic
+        behind is warned before it can see anything, peers corroborate the
+        report into a confirmed incident, and the emergency response opens a
+        corridor through it.
+
+        Prefers a road that genuinely has two vehicles on it. Only if no such
+        road exists does it place a second vehicle there, which is a demo
+        affordance rather than something traffic does -- the event log says
+        which of the two happened.
+        """
+        eligible: dict[str, list[Vehicle]] = {}
+        for vehicle in self.vehicles.values():
+            seg_id = vehicle.current_segment_id
+            if seg_id is None or vehicle.crashed or vehicle.kind == "ambulance":
+                continue
+            if segment_id is not None and seg_id != segment_id:
+                continue
+            eligible.setdefault(seg_id, []).append(vehicle)
+
+        pairs = {sid: vs for sid, vs in eligible.items() if len(vs) >= 2}
+        staged = False
+        if pairs:
+            crash_segment = self.rng.choice(sorted(pairs))
+            first, second = pairs[crash_segment][:2]
+        elif eligible:
+            # Nobody is sharing a road. Bring a second vehicle onto one.
+            crash_segment = self.rng.choice(sorted(eligible))
+            first = eligible[crash_segment][0]
+            second = self.spawn_vehicle("car")
+            second.node = first.node
+            second.route = list(first.route)
+            second.progress = max(0.0, first.progress - 0.08)
+            staged = True
+        else:
+            return None
+
+        seg = self.grid.segments[crash_segment]
+        first.crash(self.tick)
+        second.crash(self.tick)
+        seg.raise_hazard("accident", CRASH_HAZARD_TTL_TICKS, self.tick)
+        self.metrics.hazard_raised(seg.id, "accident", self.tick)
+        self.collisions.append(
+            {"tick": self.tick, "segment_id": seg.id, "vehicles": [first.id, second.id]}
+        )
+        del self.collisions[:-10]
+
+        how = "a second vehicle was brought onto the road" if staged else "two vehicles already there"
+        self._log("collision", f"Collision on {seg.id} between {first.id} and {second.id} ({how}).")
+        return {"segment_id": seg.id, "vehicles": [first.id, second.id], "staged": staged}
+
+    def dispatch_ambulance_to(self, node: str) -> Vehicle:
+        """Send an ambulance towards a specific junction.
+
+        `spawn_vehicle` gives an ambulance a random errand, which is fine for
+        background traffic and useless for showing a response to an incident
+        that just happened somewhere specific.
+        """
+        ambulance = self.spawn_vehicle("ambulance")
+        # Start it far enough away to actually be seen responding. Spawning at
+        # a random node put it *on* the incident about one time in sixteen,
+        # giving a route of one node: no journey, no corridor, no priority
+        # request, and nothing for a viewer to watch.
+        distances = sorted(
+            (n for n in self.grid.nodes if n != node),
+            key=lambda n: -self.grid.euclidean(n, node),
+        )
+        far = distances[: max(1, len(distances) // 4)]
+        # Prefer a station whose route passes a signalised junction it has not
+        # already reached. Priority is requested for junctions *ahead*, so an
+        # origin whose only light is the one under its own wheels asks for
+        # nothing -- which looked like a lost request and was really a bad
+        # dispatch. Choosing where to send from is a dispatcher's decision; it
+        # does not touch whether the request is heard or granted.
+        via_signal = [
+            origin
+            for origin in far
+            if any(hop in self.traffic_lights for hop in self.grid.shortest_path(origin, node)[1:])
+        ]
+        ambulance.node = self.rng.choice(via_signal or far)
+        ambulance.destination = node
+        ambulance.route = self.grid.shortest_path(ambulance.node, node)
+        ambulance.progress = 0.0
+        ambulance.trip_started_tick = self.tick
+        self._log("ambulance_dispatch", f"{ambulance.id} responding to {node}.")
+        return ambulance
 
     def despawn_vehicle(self) -> str | None:
         """Take a car off the road.
@@ -892,6 +987,7 @@ class SimulationEngine:
                 )
                 for ped in self.pedestrians.values()
             ],
+            "collisions": list(self.collisions),
             "perception": {
                 **self.perception_stats,
                 "glosa_active": sum(

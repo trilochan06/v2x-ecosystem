@@ -65,6 +65,15 @@ PEDESTRIAN_CAUTION_FACTOR = 0.45
 # holding a speed to catch the green is worth advising.
 GLOSA_APPROACH_PROGRESS = 0.35
 
+# How long a wreck sits in the carriageway before it is cleared and the
+# vehicles rejoin traffic.
+CRASH_IMMOBILE_TICKS = 22
+# A wrecked vehicle re-announces itself on this duty cycle. Every tick would
+# be both unrealistic and a denial of service on its own neighbours.
+CRASH_REPORT_INTERVAL_TICKS = 3
+# What a wreck does to the lane it is sitting in.
+CRASH_LANE_BLOCKAGE = 0.25
+
 
 @dataclass
 class Vehicle:
@@ -113,6 +122,13 @@ class Vehicle:
     #: within earshot.
     glosa_advice: float | None = None
 
+    # --- collision -------------------------------------------------------
+    #: Ticks left before the wreck is cleared. While non-zero this vehicle is
+    #: immobile, blocking its lane, and announcing the accident.
+    crashed_ticks: int = 0
+    #: Tick the collision happened, so the UI can say how long ago.
+    crashed_at_tick: int = -1
+
     def __post_init__(self) -> None:
         if not self.destination:
             self._pick_new_destination()
@@ -158,6 +174,23 @@ class Vehicle:
 
         seg = self.grid.segment_between(self.node, nxt)
         seg.occupancy = min(1.0, seg.occupancy + (0.02 if self.kind == "ambulance" else 0.05))
+
+        # A wreck does not drive. It sits in the lane, blocks it, and keeps
+        # announcing itself until it is cleared -- which is what gives the
+        # traffic behind time to be warned and rerouted.
+        if self.crashed_ticks > 0:
+            self.crashed_ticks -= 1
+            seg.occupancy = min(1.0, seg.occupancy + CRASH_LANE_BLOCKAGE)
+            self.glosa_advice = None
+            # A wreck is stationary, not deaf and blind. It already announces
+            # the accident, so refusing to share the pedestrian standing in
+            # front of it would be an odd place to draw the line -- and it
+            # silently starved collective perception on exactly the road where
+            # it matters most.
+            for message in (self._report_crash(seg, tick), self._maybe_share_perception(tick)):
+                if message is not None:
+                    outbound.append(message)
+            return outbound, False, None
 
         # Greenshields-style speed/density relation: the busier the segment,
         # the slower everyone on it moves. Without this, sitting in a jam is
@@ -294,6 +327,47 @@ class Vehicle:
             pseudonym=self.pseudonym,
             payload=payload,
             ttl=2,  # only the traffic immediately behind needs this
+            created_tick=tick,
+            signature=sign(payload, self.signing_key),
+            origin_segment=seg.id,
+        )
+
+    # --------------------------------------------------------- collision
+    def crash(self, tick: int) -> None:
+        """Involve this vehicle in a collision. The engine calls this on both
+        parties at once."""
+        self.crashed_ticks = CRASH_IMMOBILE_TICKS
+        self.crashed_at_tick = tick
+        self.braking_ticks = 0
+        self.yield_instruction = None
+
+    @property
+    def crashed(self) -> bool:
+        return self.crashed_ticks > 0
+
+    def _report_crash(self, seg, tick: int) -> Message | None:
+        """The wreck announcing itself: DENM causeCode 2, accident.
+
+        Confidence is 1.0 because the sender *is* the accident -- this is the
+        one hazard report that needs no corroborating witness to be certain,
+        even though the network still corroborates it like any other.
+        """
+        if tick % CRASH_REPORT_INTERVAL_TICKS != 0:
+            return None
+        cause_code, sub_cause_code = cause_for("accident")
+        payload = {
+            "segment_id": seg.id,
+            "hazard_type": "accident",
+            "cause_code": cause_code,
+            "sub_cause_code": sub_cause_code,
+            "confidence": 1.0,
+        }
+        return Message(
+            type=MessageType.DENM_HAZARD,
+            sender_id=self.id,
+            pseudonym=self.pseudonym,
+            payload=payload,
+            ttl=self.comm_range_hops,
             created_tick=tick,
             signature=sign(payload, self.signing_key),
             origin_segment=seg.id,
@@ -473,4 +547,6 @@ class Vehicle:
             # The three Porsche prototypes, as this vehicle experiences them.
             "braking": self.braking_ticks > 0,
             "glosa_advice": round(self.glosa_advice, 1) if self.glosa_advice is not None else None,
+            "crashed": self.crashed,
+            "crashed_ticks": self.crashed_ticks,
         }

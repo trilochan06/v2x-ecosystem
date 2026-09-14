@@ -34,6 +34,13 @@ const PEDESTRIAN_CAUTION_FACTOR = 0.45;
 /** Closer than this to the junction, holding a speed for the green is worth
  *  advising. */
 const GLOSA_APPROACH_PROGRESS = 0.35;
+/** How long a wreck sits in the carriageway before it is cleared. */
+const CRASH_IMMOBILE_TICKS = 22;
+/** A wrecked vehicle re-announces itself on this duty cycle. Every tick would
+ *  be both unrealistic and a denial of service on its own neighbours. */
+const CRASH_REPORT_INTERVAL_TICKS = 3;
+/** What a wreck does to the lane it is sitting in. */
+const CRASH_LANE_BLOCKAGE = 0.25;
 const REROUTE_LOOKAHEAD_HOPS = 3;
 const HAZARD_SENSE_PROBABILITY = 0.6;
 const LOOKAHEAD_SENSE_PROBABILITY = 0.3;
@@ -58,6 +65,11 @@ export class Vehicle {
   // --- Porsche prototype 3: GLOSA
   knownSignals = new Map<string, { phase: string; tick: number }>();
   glosaAdvice: number | null = null;
+  // --- collision
+  /** Ticks left before the wreck is cleared. While non-zero this vehicle is
+   *  immobile, blocking its lane, and announcing the accident. */
+  crashedTicks = 0;
+  crashedAtTick = -1;
   tripStartedTick = 0;
   /** Peer-shared knowledge only — written solely by receiveOccupancyPing, so
    *  rerouting is a genuine decentralized decision rather than a read of
@@ -113,6 +125,22 @@ export class Vehicle {
 
     const seg = this.grid.segmentBetween(this.node, nxt);
     seg.occupancy = Math.min(1, seg.occupancy + (this.kind === "ambulance" ? 0.02 : 0.05));
+
+    // A wreck does not drive. It sits in the lane, blocks it, and keeps
+    // announcing itself until it is cleared — which is what gives the traffic
+    // behind time to be warned and rerouted.
+    if (this.crashedTicks > 0) {
+      this.crashedTicks -= 1;
+      seg.occupancy = Math.min(1, seg.occupancy + CRASH_LANE_BLOCKAGE);
+      this.glosaAdvice = null;
+      // A wreck is stationary, not deaf and blind. It already announces the
+      // accident, so refusing to share the pedestrian standing in front of it
+      // would be an odd place to draw the line — and it silently starved
+      // collective perception on exactly the road where it matters most.
+      for (const message of [this.reportCrash(seg, tick), this.maybeSharePerception(tick)])
+        if (message) outbound.push(message);
+      return { outbound, rerouted, completedTrip };
+    }
 
     // Greenshields-style speed/density relation: without it, sitting in a jam
     // is free and any detour is pure loss.
@@ -200,6 +228,45 @@ export class Vehicle {
         cause_code: causeCode,
         sub_cause_code: subCauseCode,
         confidence,
+      },
+      ttl: 3,
+      createdTick: tick,
+      signed: true,
+    });
+  }
+
+  // --------------------------------------------------------- collision
+  /** Involve this vehicle in a collision. The engine calls it on both
+   *  parties at once. */
+  crash(tick: number) {
+    this.crashedTicks = CRASH_IMMOBILE_TICKS;
+    this.crashedAtTick = tick;
+    this.brakingTicks = 0;
+    this.yieldInstruction = null;
+  }
+
+  get crashed(): boolean {
+    return this.crashedTicks > 0;
+  }
+
+  /** The wreck announcing itself: DENM causeCode 2, accident.
+   *
+   *  Confidence is 1.0 because the sender *is* the accident — the one hazard
+   *  report that needs no corroborating witness to be certain, even though
+   *  the network still corroborates it like any other. */
+  private reportCrash(seg: Segment, tick: number): Message | null {
+    if (tick % CRASH_REPORT_INTERVAL_TICKS !== 0) return null;
+    const [causeCode, subCauseCode] = causeFor("accident");
+    return makeMessage({
+      type: "denm-hazard",
+      senderId: this.id,
+      pseudonym: this.pseudonym,
+      payload: {
+        segment_id: seg.id,
+        hazard_type: "accident",
+        cause_code: causeCode,
+        sub_cause_code: subCauseCode,
+        confidence: 1,
       },
       ttl: 3,
       createdTick: tick,
@@ -395,6 +462,8 @@ export class Vehicle {
       reroute_count: this.rerouteCount,
       braking: this.brakingTicks > 0,
       glosa_advice: this.glosaAdvice === null ? null : Math.round(this.glosaAdvice * 10) / 10,
+      crashed: this.crashed,
+      crashed_ticks: this.crashedTicks,
     };
   }
 }

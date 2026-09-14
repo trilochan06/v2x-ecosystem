@@ -50,6 +50,9 @@ const SIGNAL_REQUEST_TTL_HOPS = 2;
 const TRANSMISSION_LOG_LIMIT = 60;
 /** How long a pedestrian stays on the crossing. */
 const PEDESTRIAN_CROSSING_TICKS = 10;
+/** How long a wreck keeps the road hazardous. Longer than the vehicles stay
+ *  immobile, because debris outlives the recovery truck. */
+const CRASH_HAZARD_TTL_TICKS = 30;
 
 export class MetricsCollector {
   packetsIntended = 0;
@@ -290,6 +293,8 @@ export class SimulationEngine {
    *  something. `warnedBlind` is the one that matters: a vehicle acted on a
    *  pedestrian it could not itself see. */
   perceptionStats = { shared: 0, warnedBlind: 0, brakeWarnings: 0 };
+  /** Recent collisions, newest last, so the UI can narrate them. */
+  collisions: { tick: number; segment_id: string; vehicles: string[] }[] = [];
   metrics = new MetricsCollector();
   federation = new FederatedCoordinator();
   trust = new TrustRegistry();
@@ -421,6 +426,101 @@ export class SimulationEngine {
     this.pedestrians.set(pid, new Pedestrian(pid, node, crossing.id, PEDESTRIAN_CROSSING_TICKS, this.tick));
     this.log("pedestrian", `Pedestrian stepped onto the crossing at ${node}.`);
     return pid;
+  }
+
+  /**
+   * Stage a real collision between two vehicles.
+   *
+   * This is the most watchable thing the system does, because one event
+   * chains four modules together: both wrecks broadcast, the traffic behind
+   * is warned before it can see anything, peers corroborate the report into a
+   * confirmed incident, and the emergency response opens a corridor through
+   * it.
+   *
+   * Prefers a road that genuinely has two vehicles on it. Only if no such
+   * road exists does it place a second vehicle there, which is a demo
+   * affordance rather than something traffic does — the returned `staged`
+   * flag and the event log say which of the two happened.
+   */
+  triggerCollision(segmentId?: string): { segment_id: string; vehicles: string[]; staged: boolean } | null {
+    const eligible = new Map<string, Vehicle[]>();
+    for (const vehicle of this.vehicles.values()) {
+      const segId = vehicle.currentSegmentId;
+      if (!segId || vehicle.crashed || vehicle.kind === "ambulance") continue;
+      if (segmentId && segId !== segmentId) continue;
+      if (!eligible.has(segId)) eligible.set(segId, []);
+      eligible.get(segId)!.push(vehicle);
+    }
+
+    const pairs = [...eligible.entries()].filter(([, vs]) => vs.length >= 2);
+    let crashSegment: string;
+    let first: Vehicle;
+    let second: Vehicle;
+    let staged = false;
+
+    if (pairs.length) {
+      const [segId, vs] = pairs[this.rng.int(0, pairs.length - 1)];
+      crashSegment = segId;
+      [first, second] = vs;
+    } else if (eligible.size) {
+      // Nobody is sharing a road. Bring a second vehicle onto one.
+      const keys = [...eligible.keys()].sort();
+      crashSegment = keys[this.rng.int(0, keys.length - 1)];
+      first = eligible.get(crashSegment)![0];
+      second = this.spawnVehicle("car");
+      second.node = first.node;
+      second.route = [...first.route];
+      second.progress = Math.max(0, first.progress - 0.08);
+      staged = true;
+    } else {
+      return null;
+    }
+
+    const seg = this.grid.segments.get(crashSegment)!;
+    first.crash(this.tick);
+    second.crash(this.tick);
+    seg.raiseHazard("accident", CRASH_HAZARD_TTL_TICKS, this.tick);
+    this.metrics.hazardRaised(seg.id, this.tick);
+    this.collisions.push({ tick: this.tick, segment_id: seg.id, vehicles: [first.id, second.id] });
+    if (this.collisions.length > 10) this.collisions.shift();
+
+    const how = staged ? "a second vehicle was brought onto the road" : "two vehicles already there";
+    this.log("collision", `Collision on ${seg.id} between ${first.id} and ${second.id} (${how}).`);
+    return { segment_id: seg.id, vehicles: [first.id, second.id], staged };
+  }
+
+  /**
+   * Send an ambulance towards a specific junction.
+   *
+   * `spawnVehicle` gives an ambulance a random errand, which is fine for
+   * background traffic and useless for showing a response to an incident that
+   * just happened somewhere specific.
+   */
+  dispatchAmbulanceTo(node: string): Vehicle {
+    const ambulance = this.spawnVehicle("ambulance");
+    // Start it far enough away to actually be seen responding. Spawning at a
+    // random node put it *on* the incident about one time in sixteen, giving
+    // a route of one node: no journey, no corridor, no priority request, and
+    // nothing for a viewer to watch.
+    const byDistance = [...this.grid.nodes.keys()]
+      .filter((n) => n !== node)
+      .sort((a, b) => this.grid.euclidean(b, node) - this.grid.euclidean(a, node));
+    const far = byDistance.slice(0, Math.max(1, Math.floor(byDistance.length / 4)));
+    // Prefer a station whose route passes a signalised junction it has not
+    // already reached. Priority is requested for junctions *ahead*, so an
+    // origin whose only light is the one under its own wheels asks for
+    // nothing — which looked like a lost request and was really a bad
+    // dispatch. Choosing where to send from is a dispatcher's decision; it
+    // does not touch whether the request is heard or granted.
+    const viaSignal = far.filter((origin) =>
+      this.grid.shortestPath(origin, node).slice(1).some((hop) => this.trafficLights.has(hop)),
+    );
+    ambulance.node = this.rng.pick(viaSignal.length ? viaSignal : far);
+    ambulance.destination = node;
+    ambulance.route = this.grid.shortestPath(ambulance.node, node);
+    ambulance.progress = 0;
+    this.log("ambulance_dispatch", `${ambulance.id} responding to ${node}.`);
+    return ambulance;
   }
 
   /**
@@ -1075,6 +1175,7 @@ export class SimulationEngine {
           .map((v) => v.id)
           .sort(),
       })),
+      collisions: [...this.collisions],
       perception: {
         shared: this.perceptionStats.shared,
         warned_blind: this.perceptionStats.warnedBlind,

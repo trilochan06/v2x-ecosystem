@@ -246,3 +246,97 @@ def test_the_city_keeps_stepping_after_vehicles_are_removed():
     run(engine, 25)
     assert len(engine.vehicles) == 2
     assert engine.state_snapshot()["tick"] == 40
+
+
+# ------------------------------------------------------------- collisions
+def test_a_collision_immobilises_both_vehicles_and_blocks_the_lane():
+    engine = run(scene(), 10)
+    info = engine.trigger_collision()
+    assert info is not None
+
+    first, second = (engine.vehicles[v] for v in info["vehicles"])
+    assert first.crashed and second.crashed
+    assert engine.grid.segments[info["segment_id"]].hazard_active
+
+    before = first.position_xy()
+    run(engine, 5)
+    # A wreck does not drive away from its own accident.
+    assert first.position_xy() == before
+
+
+def test_a_wreck_announces_itself_and_the_network_confirms_it():
+    engine = run(scene(), 10)
+    info = engine.trigger_collision()
+    run(engine, 30)
+
+    seg = next(s for s in engine.state_snapshot()["segments"] if s["id"] == info["segment_id"])
+    assert seg["confirmed_incident"], "peers should corroborate a crash into a confirmed incident"
+    frames = engine.metrics.summary()["communication"]["frames_by_designator"]
+    assert frames.get("DENM", 0) > 0
+
+
+def test_the_wreck_is_eventually_cleared():
+    engine = run(scene(), 10)
+    engine.trigger_collision()
+    run(engine, 40)
+    assert not any(v.crashed for v in engine.vehicles.values())
+
+
+def test_a_collision_needs_two_vehicles_and_says_when_it_staged_one():
+    engine = run(scene(vehicles=1), 6)
+    info = engine.trigger_collision()
+    assert info is not None
+    # One vehicle in the city, so the second had to be brought in -- and the
+    # result says so rather than pretending traffic did it.
+    assert info["staged"] is True
+    assert len(info["vehicles"]) == 2
+
+
+def test_an_ambulance_is_dispatched_towards_the_incident_not_at_random():
+    engine = run(scene(), 10)
+    info = engine.trigger_collision()
+    junction = info["segment_id"].split("_")[0]
+
+    ambulance = engine.dispatch_ambulance_to(junction)
+    assert ambulance.destination == junction
+    # Regression: spawning at a random node put it *on* the incident roughly
+    # one time in sixteen, giving a route of one node -- no journey, no
+    # corridor, nothing to watch.
+    assert len(ambulance.route) > 1
+    assert ambulance.route[-1] == junction
+
+
+def test_the_dispatch_prefers_a_route_past_a_signalised_junction():
+    """Regression: priority is requested for junctions *ahead*, so an origin
+    whose only light is under its own wheels asked for nothing."""
+    engine = run(scene(), 10)
+    info = engine.trigger_collision()
+    junction = info["segment_id"].split("_")[0]
+    ambulance = engine.dispatch_ambulance_to(junction)
+
+    lights = set(engine.traffic_lights)
+    if any(
+        any(hop in lights for hop in engine.grid.shortest_path(n, junction)[1:])
+        for n in engine.grid.nodes
+        if n != junction
+    ):
+        assert any(hop in lights for hop in ambulance.route[1:])
+
+
+def test_a_wreck_still_shares_what_it_can_see():
+    """Regression: a crashed vehicle returned early from its tick, so it
+    announced the accident but never shared the pedestrian standing in front
+    of it -- starving collective perception on the one road where a stopped
+    car is the only thing with a view."""
+    engine = run(scene(), 10)
+    info = engine.trigger_collision()
+    wreck = engine.vehicles[info["vehicles"][0]]
+    assert wreck.crashed
+
+    wreck.seen_pedestrians = {info["segment_id"]: engine.tick}
+    seg = engine.grid.segments[info["segment_id"]]
+    messages, _, _ = wreck.step(engine.tick, allow_v2v=True, allow_rerouting=True)
+
+    assert any(m.type == MessageType.CPM for m in messages)
+    assert any(m.type == MessageType.DENM_HAZARD for m in messages) or engine.tick % 3 != 0
+    assert seg is not None

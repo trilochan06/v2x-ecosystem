@@ -23,10 +23,32 @@ inference at the edge, the regional model is trained by federated averaging
 without any raw telemetry leaving the roadside, a digital twin mirrors the city,
 and the whole thing keeps working when the cloud uplink is cut.
 
-The website is the product: a live control centre over the running simulation, a
-federated-learning monitor, a security console, and an experiment harness that
-runs the three architectures from the project design head-to-head and reports the
-measured differences.
+The website is the product: a guided demo that tells the system's stories one at
+a time, a live control centre over the running simulation, a federated-learning
+monitor, a security console, and an experiment harness that runs the three
+architectures from the project design head-to-head and reports the measured
+differences.
+
+### Start here: the guided demo
+
+`/demo` is the page to open first, and the one to show someone who has never
+heard of V2X. Pick one of seven stories — a crash and the response it triggers,
+a pedestrian seen around a corner, arriving on green, a liar being found out, a
+cloud outage, the roadside units learning together, or all of it at once — and
+it stages that event in the live simulation.
+
+Down the side is a numbered checklist of what the story claims will happen. Each
+line ticks off, with the tick it happened on, **only when the running simulation
+actually does it**. Nothing is animated or scripted: a step that the system does
+not produce stays dark. Steps that genuinely do not fire every run — priority at
+a junction depends on where the signals fall along the route, and the ask can be
+lost on the air — are labelled as such, so a dark line reads as an honest lossy
+radio rather than a broken demo.
+
+The clock stops when a story reaches its end, because these cascades are fast: a
+collision is corroborated, alerted on and responded to within about three ticks,
+which is the point being made and also far too quick to read if the scene keeps
+moving.
 
 ### The problem it addresses
 
@@ -123,7 +145,7 @@ would describe nothing a viewer cannot already see.
 ### Three connected-driving applications
 
 Each is a standard frame doing something a driver would notice, and each is
-reachable from the **Street view** page in one click:
+reachable from the **Guided demo** and **Street view** pages in one click:
 
 - **Emergency brake warning.** A car brakes hard for someone stepping out and
   emits a DENM with `causeCode` 99 / `subCauseCode` 1

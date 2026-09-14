@@ -25,6 +25,16 @@ export interface VehicleState {
   braking?: boolean;
   /** km/h a red light ahead makes it worth holding, or null for carry on. */
   glosa_advice?: number | null;
+  /** Wrecked and immobile, blocking its lane and announcing the accident. */
+  crashed?: boolean;
+  crashed_ticks?: number;
+}
+
+/** A collision that actually happened, newest last. */
+export interface CollisionState {
+  tick: number;
+  segment_id: string;
+  vehicles: string[];
 }
 
 /** A vulnerable road user on a crossing (ETSI TS 103 324 perceived object). */
@@ -265,6 +275,7 @@ export interface SimulationState {
   metrics: MetricsSummary;
   active_corridors: string[];
   pedestrians: PedestrianState[];
+  collisions: CollisionState[];
   /** What the three Porsche prototypes actually achieved this run. */
   perception: {
     /** CPMs put on the air. */

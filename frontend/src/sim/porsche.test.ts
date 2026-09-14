@@ -211,3 +211,96 @@ describe("traffic light interaction", () => {
     expect(vehicle.glosaAdviceFor(nxt, engine.tick, 40)).toBeNull();
   });
 });
+
+// ---------------------------------------------------------- collisions
+describe("collisions", () => {
+  const city = (seed = 4, numVehicles = 8) =>
+    new SimulationEngine({ seed, gridSize: 4, numRsus: 9, numVehicles, autoHazards: false });
+
+  it("immobilises both vehicles and blocks the lane", () => {
+    const e = run(city(), 10);
+    const info = e.triggerCollision()!;
+    expect(info).not.toBeNull();
+
+    const [first, second] = info.vehicles.map((id) => e.vehicles.get(id)!);
+    expect(first.crashed).toBe(true);
+    expect(second.crashed).toBe(true);
+    expect(e.grid.segments.get(info.segment_id)!.hazardActive).toBe(true);
+
+    const before = first.positionXY();
+    run(e, 5);
+    // A wreck does not drive away from its own accident.
+    expect(first.positionXY()).toEqual(before);
+  });
+
+  it("announces itself and the network confirms it", () => {
+    const e = run(city(), 10);
+    const info = e.triggerCollision()!;
+    run(e, 30);
+
+    const seg = e.stateSnapshot().segments.find((s) => s.id === info.segment_id)!;
+    expect(seg.confirmed_incident).toBe(true);
+    expect(e.metrics.summary().communication.frames_by_designator.DENM ?? 0).toBeGreaterThan(0);
+  });
+
+  it("clears the wreck eventually", () => {
+    const e = run(city(), 10);
+    e.triggerCollision();
+    run(e, 40);
+    expect([...e.vehicles.values()].some((v) => v.crashed)).toBe(false);
+  });
+
+  it("says when it had to stage the second vehicle", () => {
+    const e = run(city(4, 1), 6);
+    const info = e.triggerCollision()!;
+    // One vehicle in the city, so the second had to be brought in — and the
+    // result says so rather than pretending traffic did it.
+    expect(info.staged).toBe(true);
+    expect(info.vehicles).toHaveLength(2);
+  });
+
+  it("dispatches an ambulance towards the incident, not at random", () => {
+    const e = run(city(), 10);
+    const info = e.triggerCollision()!;
+    const junction = info.segment_id.split("_")[0];
+
+    const ambulance = e.dispatchAmbulanceTo(junction);
+    expect(ambulance.destination).toBe(junction);
+    // Regression: spawning at a random node put it *on* the incident roughly
+    // one time in sixteen — no journey, no corridor, nothing to watch.
+    expect(ambulance.route.length).toBeGreaterThan(1);
+    expect(ambulance.route[ambulance.route.length - 1]).toBe(junction);
+  });
+
+  it("prefers a dispatch route that passes a signalised junction", () => {
+    // Regression: priority is requested for junctions *ahead*, so an origin
+    // whose only light is under its own wheels asked for nothing.
+    const e = run(city(), 10);
+    const info = e.triggerCollision()!;
+    const junction = info.segment_id.split("_")[0];
+    const ambulance = e.dispatchAmbulanceTo(junction);
+
+    const reachable = [...e.grid.nodes.keys()]
+      .filter((n) => n !== junction)
+      .some((n) => e.grid.shortestPath(n, junction).slice(1).some((h) => e.trafficLights.has(h)));
+    if (reachable)
+      expect(ambulance.route.slice(1).some((h) => e.trafficLights.has(h))).toBe(true);
+  });
+});
+
+describe("a wreck's sensors", () => {
+  it("still shares what it can see", () => {
+    // Regression: a crashed vehicle returned early from its tick, so it
+    // announced the accident but never shared the pedestrian standing in
+    // front of it — starving collective perception on the one road where a
+    // stopped car is the only thing with a view.
+    const e = run(new SimulationEngine({ seed: 4, gridSize: 4, numRsus: 9, numVehicles: 8, autoHazards: false }), 10);
+    const info = e.triggerCollision()!;
+    const wreck = e.vehicles.get(info.vehicles[0])!;
+    expect(wreck.crashed).toBe(true);
+
+    wreck.seenPedestrians = new Map([[info.segment_id, e.tick]]);
+    const { outbound } = wreck.step(e.tick, true, true);
+    expect(outbound.some((m) => m.type === "cpm")).toBe(true);
+  });
+});

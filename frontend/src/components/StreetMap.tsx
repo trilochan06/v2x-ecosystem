@@ -286,6 +286,13 @@ export function StreetMap({
                 shape, so without this, clicking a car mostly selects the road
                 underneath it. */}
             <circle r={14} fill="transparent" />
+            {/* A wreck: immobile, blocking the lane, still broadcasting. */}
+            {v.crashed && (
+              <>
+                <circle r={21} fill="#ff5a5a" opacity={0.2} className="incident-pulse" />
+                <circle r={15} fill="none" stroke="#ff5a5a" strokeWidth={2.5} />
+              </>
+            )}
             {v.yielding && <circle r={20} fill="#f0b429" opacity={0.22} />}
             {/* Braking hard right now — the frame telling the traffic behind
                 is on the air this very tick. */}
@@ -296,12 +303,14 @@ export function StreetMap({
             )}
             {selected && <circle r={19} fill="none" stroke="#fff" strokeWidth={2} opacity={0.85} />}
             <g transform={`rotate(${angle})`}>
-              {/* A wedge, so heading is readable at a glance. */}
+              {/* A wedge, so heading is readable at a glance. A wreck is
+                  drawn askew and greyed — it is not going anywhere. */}
               <path
                 d="M 11 0 L -7 7 L -4 0 L -7 -7 Z"
-                fill={fill}
+                fill={v.crashed ? "#8b6b6b" : fill}
                 stroke="#0a1018"
                 strokeWidth={1.2}
+                transform={v.crashed ? "rotate(34)" : undefined}
                 filter={v.kind === "ambulance" ? "url(#glow)" : undefined}
               />
             </g>

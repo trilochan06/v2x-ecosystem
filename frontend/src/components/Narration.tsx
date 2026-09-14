@@ -55,7 +55,32 @@ function describe(state: SimulationState): Line[] {
   const out: Line[] = [];
   const name = (id: string) => (id.startsWith("rsu-") ? id.replace("rsu-", "Roadside unit ") : id);
 
+  // Every signalised junction broadcasts on the same duty cycle, so on a
+  // dense grid SPaT is most of the traffic and floods out everything worth
+  // reading. One line per tick says the same thing and leaves room for the
+  // events a viewer actually came to see.
+  const spatPerTick = new Map<number, number>();
+  for (const t of state.transmissions)
+    if (t.designator === "SPATEM") spatPerTick.set(t.tick, (spatPerTick.get(t.tick) ?? 0) + 1);
+  const spatEmitted = new Set<number>();
+
   for (const t of state.transmissions) {
+    if (t.designator === "SPATEM") {
+      if (spatEmitted.has(t.tick)) continue;
+      spatEmitted.add(t.tick);
+      const n = spatPerTick.get(t.tick) ?? 1;
+      out.push({
+        key: `spat-${t.tick}`,
+        tick: t.tick,
+        tone: "signal",
+        text:
+          n === 1
+            ? `The signal at ${t.origin_node} broadcast its phase so approaching cars know what it will be doing.`
+            : `${n} junctions broadcast their phase so approaching cars know what the lights will do.`,
+      });
+      continue;
+    }
+
     const heard = t.delivered_to.length;
     const audience =
       heard === 0
