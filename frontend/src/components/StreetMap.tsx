@@ -1,5 +1,6 @@
 import type { SimulationState, Transmission } from "../types";
-import { roadName } from "../sim/core";
+import { avenueName, crossName, junctionName, roadName } from "../sim/core";
+import { MAP, trafficColor, trafficWord } from "./map/mapStyle";
 
 /**
  * A street-level view of a small neighbourhood.
@@ -99,38 +100,60 @@ export function StreetMap({
         </filter>
       </defs>
 
+      {/* ------------------------------------------------------- the ground */}
+      <rect x={0} y={0} width={total} height={total} fill={MAP.land} />
+      {Array.from({ length: size - 1 }).map((_, bx) =>
+        Array.from({ length: size - 1 }).map((_, by) => {
+          const [x0, y0] = nodeXY(`${bx}-${by}`);
+          const [x1, y1] = nodeXY(`${bx + 1}-${by + 1}`);
+          const inset = 12;
+          return (
+            <rect
+              key={`block-${bx}-${by}`}
+              x={x0 + inset}
+              y={y0 + inset}
+              width={x1 - x0 - inset * 2}
+              height={y1 - y0 - inset * 2}
+              rx={5}
+              fill={(bx + by) % 3 === 0 ? MAP.park : MAP.block}
+              stroke={(bx + by) % 3 === 0 ? MAP.parkEdge : MAP.blockEdge}
+              strokeWidth={1}
+            />
+          );
+        }),
+      )}
+
       {/* ---------------------------------------------------------- roads */}
       {state.segments.map((seg) => {
         const [ax, ay] = nodeXY(seg.a);
         const [bx, by] = nodeXY(seg.b);
-        const busy = seg.occupancy;
-        const stroke = seg.hazard_active
-          ? "#e66767"
-          : busy > 0.66
-            ? "#e08a5a"
-            : busy > 0.33
-              ? "#c9a227"
-              : "#2c3a4a";
+        return (
+          <g key={`base-${seg.id}`}>
+            <line x1={ax} y1={ay} x2={bx} y2={by} stroke={MAP.roadCasing} strokeWidth={26} strokeLinecap="round" />
+            <line x1={ax} y1={ay} x2={bx} y2={by} stroke={MAP.road} strokeWidth={20} strokeLinecap="round" />
+            {seg.occupancy >= 0.35 && (
+              <line x1={ax} y1={ay} x2={bx} y2={by} stroke={trafficColor(seg.occupancy)} strokeWidth={5} strokeLinecap="round" opacity={0.85} />
+            )}
+          </g>
+        );
+      })}
+
+      {state.segments.map((seg) => {
+        const [ax, ay] = nodeXY(seg.a);
+        const [bx, by] = nodeXY(seg.b);
         return (
           <g key={seg.id}>
-            <line
-              x1={ax}
-              y1={ay}
-              x2={bx}
-              y2={by}
-              stroke={stroke}
-              strokeWidth={seg.id === selectedSegment ? 17 : 14}
-              strokeLinecap="round"
-              opacity={0.95}
-            />
+            {seg.id === selectedSegment && (
+              <line x1={ax} y1={ay} x2={bx} y2={by} stroke={MAP.selection} strokeWidth={25} strokeLinecap="round" opacity={0.2} />
+            )}
             {/* Lane divider, so a road reads as a road. */}
             <line
               x1={ax}
               y1={ay}
               x2={bx}
               y2={by}
-              stroke="#0a1018"
-              strokeWidth={1.4}
+              stroke={MAP.slow}
+              strokeWidth={1.6}
               strokeDasharray="7 9"
               opacity={0.55}
             />
@@ -140,10 +163,10 @@ export function StreetMap({
                 y1={ay}
                 x2={bx}
                 y2={by}
-                stroke="#ff5a5a"
+                stroke="{MAP.incident}"
                 strokeWidth={19}
                 strokeLinecap="round"
-                opacity={0.28}
+                opacity={0.3}
                 className="incident-pulse"
               />
             )}
@@ -153,7 +176,7 @@ export function StreetMap({
                 y1={ay}
                 x2={bx}
                 y2={by}
-                stroke="#f0b429"
+                stroke={MAP.suspect}
                 strokeWidth={4}
                 strokeDasharray="10 6"
                 strokeLinecap="round"
@@ -170,8 +193,9 @@ export function StreetMap({
               onClick={() => onSelectSegment(seg.id === selectedSegment ? null : seg.id)}
             >
               <title>
-                {seg.a} → {seg.b} · {Math.round(seg.occupancy * 100)}% full
-                {seg.hazard_active ? ` · ${seg.hazard_type}` : ""}
+                {roadName(seg.id)} — traffic {trafficWord(seg.occupancy)} (
+                {Math.round(seg.occupancy * 100)}% full)
+                {seg.hazard_active ? ` · ${seg.hazard_type.replace(/_/g, " ")} on the carriageway` : ""}
               </title>
             </line>
           </g>
@@ -226,6 +250,26 @@ export function StreetMap({
         );
       })}
 
+      {/* ------------------------------------------------------ street names */}
+      {/* The whole complaint about the old drawing was that the roads had no
+          names, so nothing anyone saw could be talked about afterwards. */}
+      <g aria-hidden="true">
+        {Array.from({ length: size }).map((_, x) => {
+          const lx = px(x);
+          const ly = px(0.5);
+          return (
+            <text key={`ave-${x}`} x={lx} y={ly} transform={`rotate(-90 ${lx} ${ly})`} className="street-label">
+              {avenueName(x)}
+            </text>
+          );
+        })}
+        {Array.from({ length: size }).map((_, y) => (
+          <text key={`cross-${y}`} x={px(Math.max(1, size - 2) - 0.5)} y={px(y)} className="street-label">
+            {crossName(y)}
+          </text>
+        ))}
+      </g>
+
       {/* ------------------------------------------------------------ RSUs */}
       {state.rsus.map((rsu) => {
         const [x, y] = nodeXY(rsu.node);
@@ -238,11 +282,17 @@ export function StreetMap({
               width={26}
               height={26}
               rx={6}
-              fill={rsu.alive ? "#16212f" : "#3a1a1a"}
-              stroke={rsu.alive ? "#3987e5" : "#e66767"}
+              fill="#FFFFFF"
+              stroke={rsu.alive ? MAP.selection : MAP.incident}
               strokeWidth={2}
             />
-            <text x={x} y={y + 4} textAnchor="middle" className="street-rsu-label">
+            <text
+              x={x}
+              y={y + 4}
+              textAnchor="middle"
+              className="street-rsu-label"
+              fill={rsu.alive ? MAP.selection : MAP.incident}
+            >
               {rsu.id.replace("rsu-", "R")}
             </text>
             {light && (
@@ -250,13 +300,13 @@ export function StreetMap({
                 cx={x + 17}
                 cy={y - 15}
                 r={5}
-                fill={light.phase === "green" ? "#199e70" : "#e66767"}
-                stroke={light.preempted ? "#f0b429" : "none"}
+                fill={light.phase === "green" ? MAP.flowing : MAP.incident}
+                stroke={light.preempted ? MAP.corridor : "none"}
                 strokeWidth={2.5}
               />
             )}
             <title>
-              {rsu.id} · {rsu.alive ? "online" : "OFFLINE"}
+              {rsu.id} at {junctionName(rsu.node)} · {rsu.alive ? "online" : "OFFLINE"}
               {light ? ` · light ${light.phase}${light.preempted ? " (preempted)" : ""}` : ""}
             </title>
           </g>
@@ -274,7 +324,7 @@ export function StreetMap({
         const angle = (Math.atan2(target[1] - y, target[0] - x) * 180) / Math.PI;
         const selected = v.id === selectedVehicle;
         const fill =
-          v.kind === "ambulance" ? "#f87171" : v.kind === "malicious" ? "#c084fc" : "#7dd3fc";
+          v.kind === "ambulance" ? MAP.ambulance : v.kind === "malicious" ? MAP.attacker : MAP.vehicle;
 
         return (
           <g
@@ -290,27 +340,27 @@ export function StreetMap({
             {/* A wreck: immobile, blocking the lane, still broadcasting. */}
             {v.crashed && (
               <>
-                <circle r={21} fill="#ff5a5a" opacity={0.2} className="incident-pulse" />
-                <circle r={15} fill="none" stroke="#ff5a5a" strokeWidth={2.5} />
+                <circle r={21} fill={MAP.incident} opacity={0.25} className="incident-pulse" />
+                <circle r={15} fill="none" stroke={MAP.incident} strokeWidth={2.5} />
               </>
             )}
-            {v.yielding && <circle r={20} fill="#f0b429" opacity={0.22} />}
+            {v.yielding && <circle r={20} fill={MAP.corridor} opacity={0.25} />}
             {/* Braking hard right now — the frame telling the traffic behind
                 is on the air this very tick. */}
-            {v.braking && <circle r={17} fill="none" stroke="#ff5a5a" strokeWidth={3} opacity={0.9} />}
+            {v.braking && <circle r={17} fill="none" stroke={MAP.incident} strokeWidth={3} opacity={0.9} />}
             {/* Holding an advisory speed for a red light ahead. */}
             {v.glosa_advice != null && (
-              <circle r={22} fill="none" stroke="#199e70" strokeWidth={2} strokeDasharray="4 5" opacity={0.8} />
+              <circle r={22} fill="none" stroke={MAP.flowing} strokeWidth={2} strokeDasharray="4 5" opacity={0.85} />
             )}
-            {selected && <circle r={19} fill="none" stroke="#fff" strokeWidth={2} opacity={0.85} />}
+            {selected && <circle r={19} fill="none" stroke={MAP.selection} strokeWidth={2.5} />}
             <g transform={`rotate(${angle})`}>
               {/* A wedge, so heading is readable at a glance. A wreck is
                   drawn askew and greyed — it is not going anywhere. */}
               <path
                 d="M 11 0 L -7 7 L -4 0 L -7 -7 Z"
-                fill={v.crashed ? "#8b6b6b" : fill}
-                stroke="#0a1018"
-                strokeWidth={1.2}
+                fill={v.crashed ? MAP.wreck : fill}
+                stroke="#FFFFFF"
+                strokeWidth={1.6}
                 transform={v.crashed ? "rotate(34)" : undefined}
                 filter={v.kind === "ambulance" ? "url(#glow)" : undefined}
               />
@@ -335,13 +385,13 @@ export function StreetMap({
         const [x, y] = crossingXY(ped.segment_id, ped.node, nodeXY);
         return (
           <g key={ped.id} transform={`translate(${x} ${y})`}>
-            <circle r={15} fill="#f0b429" opacity={0.16} className="incident-pulse" />
+            <circle r={15} fill={MAP.slow} opacity={0.3} className="incident-pulse" />
             {ped.known_by.length > 0 && (
-              <circle r={19} fill="none" stroke="#f0b429" strokeWidth={1.6} strokeDasharray="3 4" opacity={0.9} />
+              <circle r={19} fill="none" stroke={MAP.slow} strokeWidth={1.8} strokeDasharray="3 4" />
             )}
             {/* A stick figure reads as a person at this size; a dot does not. */}
-            <g stroke="#f7f3e8" strokeWidth={1.8} strokeLinecap="round" fill="none">
-              <circle cx={0} cy={-6} r={2.6} fill="#f7f3e8" stroke="none" />
+            <g stroke={MAP.label} strokeWidth={1.8} strokeLinecap="round" fill="none">
+              <circle cx={0} cy={-6} r={2.6} fill={MAP.label} stroke="none" />
               <line x1={0} y1={-3.5} x2={0} y2={2.5} />
               <line x1={-3.5} y1={-1} x2={3.5} y2={-1} />
               <line x1={0} y1={2.5} x2={-3} y2={7} />

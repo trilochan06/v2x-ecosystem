@@ -2,6 +2,8 @@ import { useState } from "react";
 import { DENSITIES, commands, switchArchitecture, useSimulation } from "../sim/runtime";
 import { CONFIGS } from "../sim/engine";
 import { CityMap } from "../components/CityMap";
+import { DEFAULT_LAYERS, LAYER_LABELS } from "../components/map/mapStyle";
+import type { MapLayers } from "../components/map/mapStyle";
 import { ExplainPanel } from "../components/ExplainPanel";
 import { EventLog } from "../components/EventLog";
 import { FogPanel } from "../components/FogPanel";
@@ -17,6 +19,9 @@ export function ControlCenter() {
    *  does *it* know and why did it last change its mind — so the two
    *  selections are separate and picking one clears the other. */
   const [selectedVehicle, setSelectedVehicle] = useState<string | null>(null);
+  /** Which overlays are drawn. Every one is something a viewer might
+   *  reasonably want out of the way while they look at something else. */
+  const [layers, setLayers] = useState<MapLayers>(DEFAULT_LAYERS);
   /** Hide the side column and give the map the whole page. The map is the
    *  thing people came to look at; at 1fr next to a 360px column on a laptop
    *  it is too small to read. */
@@ -170,6 +175,19 @@ export function ControlCenter() {
               {wideMap ? "⇤ Show panels" : "⇥ Widen map"}
             </button>
           </div>
+          <div className="map-layers" role="group" aria-label="Map layers">
+            {LAYER_LABELS.map((l) => (
+              <button
+                key={l.key}
+                className={layers[l.key] ? "layer-chip on" : "layer-chip"}
+                title={l.hint}
+                aria-pressed={layers[l.key]}
+                onClick={() => setLayers((cur) => ({ ...cur, [l.key]: !cur[l.key] }))}
+              >
+                {l.label}
+              </button>
+            ))}
+          </div>
           <CityMap
             state={state}
             selectedSegment={selectedSegment}
@@ -182,18 +200,17 @@ export function ControlCenter() {
               setSelectedVehicle(id);
               if (id) setSelectedSegment(null);
             }}
+            layers={layers}
           />
           <div className="legend">
-            <span><i className="dot" style={{ background: "#7dd3fc" }} /> vehicle</span>
-            <span><i className="dot" style={{ background: "#f87171" }} /> ambulance</span>
-            <span><i className="dot" style={{ background: "#c084fc" }} /> attacker</span>
-            <span><i className="line" style={{ background: "#199e70" }} /> free flowing</span>
-            <span><i className="line" style={{ background: "#e66767" }} /> congested</span>
-            <span><i className="line dashed-red" /> physical hazard</span>
-            <span><i className="line dashed-amber" /> network-confirmed incident</span>
-            <span><i className="dot" style={{ background: "#2a3350" }} /> city centre</span>
-            <span><i className="dot" style={{ background: "#2e2a1f" }} /> industrial estate</span>
-            <span><i className="dot" style={{ background: "#1f3330" }} /> civic quarter</span>
+            <span><i className="dot" style={{ background: "#3D4A5C" }} /> vehicle</span>
+            <span><i className="dot" style={{ background: "#E14B4B" }} /> ambulance</span>
+            <span><i className="dot" style={{ background: "#9B59D0" }} /> attacker</span>
+            <span><i className="line" style={{ background: "#F2B33D" }} /> slowing</span>
+            <span><i className="line" style={{ background: "#D64541" }} /> at a standstill</span>
+            <span><i className="pin-key" style={{ background: "#D6453D" }} /> incident that is really there</span>
+            <span><i className="pin-key" style={{ background: "#9B59D0" }} /> confirmed, but nothing is there</span>
+            <span><i className="pin-key" style={{ background: "#F2B33D" }} /> real, not yet believed</span>
           </div>
           <p className="muted small map-hint">
             Click any road or any car to be told why it is doing what it is doing.
@@ -240,6 +257,10 @@ export function ControlCenter() {
             state={state}
             selectedSegment={selectedSegment}
             selectedVehicle={selectedVehicle}
+            onClear={() => {
+              setSelectedSegment(null);
+              setSelectedVehicle(null);
+            }}
           />
           <FogPanel state={state} />
 
@@ -299,30 +320,30 @@ function MessageMix({ state }: { state: SimulationState }) {
       {rows.length === 0 ? (
         <p className="muted small">No frames transmitted yet.</p>
       ) : (
-        <div className="table-scroll">
-          <table className="data-table">
-          <thead>
-            <tr>
-              <th>Frame</th>
-              <th>Standard</th>
-              <th>Count</th>
-              <th>Share</th>
-              <th>KB</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map(([designator, count]) => (
-              <tr key={designator}>
-                <td>{designator}</td>
-                <td className="muted small">{DESIGNATOR_STANDARD[designator] ?? "—"}</td>
-                <td>{count}</td>
-                <td>{total ? Math.round((count / total) * 100) : 0}%</td>
-                <td>{kilobytes[designator] ?? 0}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        </div>
+        // A five-column table in a 360px column is a table you have to scroll
+        // sideways to read, which is the same as not showing it. The same
+        // numbers, stacked and with the share drawn rather than printed.
+        <ul className="frame-mix">
+          {rows.map(([designator, count]) => {
+            const share = total ? Math.round((count / total) * 100) : 0;
+            return (
+              <li key={designator}>
+                <div className="frame-mix-head">
+                  <strong>{designator}</strong>
+                  <span className="muted small">{DESIGNATOR_STANDARD[designator] ?? "—"}</span>
+                </div>
+                <div className="frame-mix-bar">
+                  <span style={{ width: `${share}%` }} />
+                </div>
+                <div className="frame-mix-nums">
+                  <span>{count.toLocaleString()} frames</span>
+                  <span>{share}%</span>
+                  <span>{kilobytes[designator] ?? 0} KB</span>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
       )}
       <p className="muted small">
         CAM is the periodic awareness heartbeat, DENM the event-driven hazard warning carrying a

@@ -345,7 +345,7 @@ export class SimulationEngine {
   corroboration = new CorroborationEngine();
   rsuNetwork = new RSUNetwork();
   predictor = new CongestionPredictor();
-  eventLog: { tick: number; type: string; message: string }[] = [];
+  eventLog: { tick: number; type: string; message: string; where: string | null }[] = [];
   /** Why the system did what it did — see `explain.ts`. */
   ledger = new DecisionLedger();
   /**
@@ -446,6 +446,7 @@ export class SimulationEngine {
       this.log(
         "malicious_spawned",
         `Attacker ${id} joined at ${junctionName(node)} and is injecting false hazard reports.`,
+        node,
       );
       this.explain(
         "attack",
@@ -488,7 +489,7 @@ export class SimulationEngine {
 
     const pid = `ped-${this.pedestrianCounter++}`;
     this.pedestrians.set(pid, new Pedestrian(pid, node, crossing.id, PEDESTRIAN_CROSSING_TICKS, this.tick));
-    this.log("pedestrian", `Pedestrian stepped onto the crossing at ${node}.`);
+    this.log("pedestrian", `Someone stepped onto the crossing at ${junctionName(node)}.`, crossing.id);
     return pid;
   }
 
@@ -561,7 +562,7 @@ export class SimulationEngine {
       junction: `Collision at ${junctionName(meetingPoint ?? seg.b)}: ${ids[0]} and ${ids[ids.length - 1]} arrived together from different approaches.`,
       solo: `Single-vehicle accident on ${roadName(seg.id)}: ${ids[0]} left the carriageway.`,
     }[kind];
-    this.log("collision", description);
+    this.log("collision", description, seg.id);
     this.explain(
       "collision",
       ids[0],
@@ -714,7 +715,11 @@ export class SimulationEngine {
     if (!rsu) return;
     rsu.alive = alive;
     this.rsuNetwork.setAlive(rsuId, alive);
-    this.log(alive ? "rsu_recovered" : "rsu_fault", `${rsuId} ${alive ? "restored" : "went DOWN"}.`);
+    this.log(
+      alive ? "rsu_recovered" : "rsu_fault",
+      `${rsuId} at ${junctionName(rsu.node)} ${alive ? "is back online" : "went DOWN"}.`,
+      rsu.node,
+    );
   }
 
   setCloudOnline(online: boolean) {
@@ -754,7 +759,7 @@ export class SimulationEngine {
     const kind = this.rng.pick(HAZARD_TYPES);
     seg.raiseHazard(kind, this.rng.int(35, 70), this.tick);
     this.metrics.hazardRaised(seg.id, this.tick);
-    this.log("hazard", `${kind.replace(/_/g, " ")} on ${roadName(seg.id)}.`);
+    this.log("hazard", `${kind.replace(/_/g, " ")} on ${roadName(seg.id)}.`, seg.id);
     return seg.id;
   }
 
@@ -1365,8 +1370,8 @@ export class SimulationEngine {
     this.replayGuard.prune(this.tick);
   }
 
-  private log(type: string, message: string) {
-    this.eventLog.push({ tick: this.tick, type, message });
+  private log(type: string, message: string, where: string | null = null) {
+    this.eventLog.push({ tick: this.tick, type, message, where });
     if (this.eventLog.length > MAX_EVENTS) this.eventLog.shift();
   }
 

@@ -288,6 +288,10 @@ export function GuidedDemo() {
             state={state}
             selectedSegment={selectedSegment}
             selectedVehicle={selectedVehicle}
+            onClear={() => {
+              setSelectedSegment(null);
+              setSelectedVehicle(null);
+            }}
           />
 
           <Narration state={state} lines={7} />

@@ -24,6 +24,10 @@ interface Props {
   state: SimulationState;
   selectedSegment: string | null;
   selectedVehicle?: string | null;
+  /** Drop back to the whole-city feed. Without it, clicking one road is a
+   *  one-way door: the panel narrows to that road and there is no way back
+   *  to what the rest of the network is doing. */
+  onClear?: () => void;
 }
 
 const RISK_COLOR: Record<string, string> = {
@@ -62,7 +66,7 @@ const KIND_ICON: Record<string, string> = {
   outage: "🔌",
 };
 
-export function ExplainPanel({ state, selectedSegment, selectedVehicle }: Props) {
+export function ExplainPanel({ state, selectedSegment, selectedVehicle, onClear }: Props) {
   const vehicle = selectedVehicle
     ? state.vehicles.find((v) => v.id === selectedVehicle)
     : undefined;
@@ -70,9 +74,18 @@ export function ExplainPanel({ state, selectedSegment, selectedVehicle }: Props)
     ? (state.dossiers ?? []).find((d) => d.segment_id === selectedSegment)
     : undefined;
 
+  const narrowed = Boolean(vehicle || selectedSegment);
+
   return (
     <div className="panel explain">
-      <h2>Why this is happening</h2>
+      <h2>
+        Why this is happening
+        {narrowed && onClear && (
+          <button className="explain-clear" onClick={onClear}>
+            ← everything
+          </button>
+        )}
+      </h2>
 
       {vehicle ? (
         <VehicleExplanation vehicle={vehicle} state={state} />

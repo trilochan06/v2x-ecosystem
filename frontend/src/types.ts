@@ -231,6 +231,10 @@ export interface EventEntry {
   tick: number;
   type: string;
   message: string;
+  /** Where it happened — a segment id or a junction node. The engine knows
+   *  this exactly; recovering it by matching street names out of the
+   *  message anchors half the alerts to the wrong road. */
+  where?: string | null;
 }
 
 export interface SimulationState {

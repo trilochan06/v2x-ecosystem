@@ -165,6 +165,36 @@ check("architecture switch applies", (await text()).includes("Exp 1"));
 await page.selectOption("#arch", "exp3_full");
 await page.waitForTimeout(600);
 
+// --------------------------------------------------------------- the map
+console.log("\nthe map");
+check("streets are named on the map", (await page.locator(".street-label").count()) > 0);
+check("districts are named", (await page.locator(".district-label").count()) > 0);
+
+// A map you have to scroll to finish looking at is a map nobody sees the
+// bottom of, and a map wider than its panel is the sideways scroll this
+// redesign exists to remove.
+const mapBox = await page.locator(".city-map").boundingBox();
+const panelBox = await page.locator(".map-panel").boundingBox();
+check("the map fits its panel", mapBox.width <= panelBox.width + 1, `${Math.round(mapBox.width)} in ${Math.round(panelBox.width)}`);
+check("the whole map is on screen at once", mapBox.height <= 1000, `${Math.round(mapBox.height)}px tall`);
+
+const zoomedOut = await page.locator(".city-map").getAttribute("viewBox");
+await page.getByRole("button", { name: "Zoom in" }).click();
+await page.waitForTimeout(300);
+check("zoom changes the view", (await page.locator(".city-map").getAttribute("viewBox")) !== zoomedOut);
+await page.getByRole("button", { name: /Fit the whole city/ }).click();
+await page.waitForTimeout(300);
+check("fit restores the whole city", (await page.locator(".city-map").getAttribute("viewBox")) === zoomedOut);
+
+// Layers must actually remove what they name.
+const streetLabels = await page.locator(".street-label").count();
+await page.getByRole("button", { name: "Street names", exact: true }).click();
+await page.waitForTimeout(300);
+check("a layer can be turned off", (await page.locator(".street-label").count()) === 0, `${streetLabels} before`);
+await page.getByRole("button", { name: "Street names", exact: true }).click();
+await page.waitForTimeout(300);
+check("and back on", (await page.locator(".street-label").count()) > 0);
+
 // ------------------------------------------------------ explainability
 console.log("\nexplainability");
 // Roads are named, not printed as matrix indices — the single biggest reason
@@ -182,9 +212,20 @@ check("the why panel is present", (await page.locator(".panel.explain").count())
 
 await page.getByRole("button", { name: /Inject road hazard/ }).click();
 await page.waitForTimeout(1500);
-check("a hazard raises a labelled incident on the map", (await page.locator(".incident-badge").count()) > 0);
+check("a hazard raises a pin on the map", (await page.locator(".incident-pin").count()) > 0);
 
-await page.locator(".incident-badge").first().click();
+// Something going wrong has to say so where it happened, not only in a log.
+check("something going wrong opens a popup on the map", (await page.locator(".map-alert").count()) > 0);
+if (await page.locator(".map-alert").count()) {
+  const popup = await page.locator(".map-alert").first().innerText();
+  check("the popup names the street", /(Cross|Avenue)/.test(popup), popup.slice(0, 60));
+  check("the popup says whether the network is right", /network|corroborat/i.test(popup));
+  await page.locator(".map-alert-close").first().click();
+  await page.waitForTimeout(300);
+  check("the popup can be dismissed", (await page.locator(".map-alert").count()) === 0);
+}
+
+await page.locator(".incident-pin").first().click();
 await page.waitForTimeout(500);
 check("clicking an incident opens its dossier", (await page.locator(".verdict").count()) > 0);
 check("the dossier puts belief against ground truth", (await page.locator(".truth-table").count()) > 0);
@@ -192,7 +233,10 @@ check("the dossier puts belief against ground truth", (await page.locator(".trut
 // A decision must be able to justify itself, not merely announce itself.
 await page.getByRole("button", { name: /Inject attacker/ }).click();
 await page.waitForTimeout(3000);
-await page.locator(".city-map").click({ position: { x: 4, y: 4 } });
+// Clicking one road narrows the panel to that road; there has to be a way
+// back to what the rest of the network is doing.
+check("a selection can be cleared", (await page.locator(".explain-clear").count()) > 0);
+await page.locator(".explain-clear").first().click();
 await page.waitForTimeout(400);
 const decisionCount = await page.locator(".decision").count();
 check("decisions are recorded", decisionCount > 0, `${decisionCount} on screen`);

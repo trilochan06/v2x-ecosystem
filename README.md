@@ -195,6 +195,39 @@ estate, residential); destinations are drawn in proportion to it, and a vehicle
 parks for a few ticks at the end of a trip instead of bouncing off it. Jams now
 form in the middle of the map on their own.
 
+## The city is drawn as a map
+
+It used to be drawn as the graph it is internally: nodes, edges, coloured
+lines on a dark field. That is faithful to the data structure and unreadable
+as a picture — nothing said "city", roads had no names, and every mark had to
+be explained before any of it could be followed.
+
+It now borrows the conventions of the map everyone already has in their
+pocket: pale land, white carriageways on a grey casing, green parks, building
+footprints, named streets and districts. Nothing about the model changed; what
+changed is that the viewer arrives already knowing how to read it.
+
+Four things make it a map rather than a picture of one:
+
+- **Live traffic is drawn beside the road, not instead of it**, and only where
+  there is something to say. Colouring every road including the empty ones is
+  what made the old drawing a diagram of coloured lines: the eye has nowhere to
+  go and the streets vanish underneath. A road that is flowing is just a road.
+- **It pans and zooms**, and will follow a selected vehicle, because a city
+  with thirty cars in it is unreadable at one fixed scale however well drawn.
+- **Its overlays can be switched off** — traffic, incidents, radio, roadside
+  units, street names — so a viewer can take away whatever they are not looking
+  at.
+- **When something goes wrong it says so where it happened.** A popup opens on
+  the incident itself with what happened, which street, and whether the network
+  is right about it. Previously a hazard turned a road a different colour and
+  added a line to a log in the corner: both true, neither noticeable, and a
+  viewer watching the map missed it entirely.
+
+The map is capped against the viewport so the whole city is on screen at once,
+and no panel on either page scrolls sideways at any width from 320px up — the
+five-column frame-mix table that used to needed it is now a stacked list.
+
 ## Explaining what the system is doing
 
 Three mechanisms, because "why" means three different things here.
@@ -202,8 +235,10 @@ Three mechanisms, because "why" means three different things here.
 **Streets have names.** `5-3_5-4` is not something anyone can hold in their
 head, and an event log that reads like a matrix index is the main reason a
 viewer cannot follow the system. North–south roads are named avenues, east–west
-roads are numbered crosses, and every log line, tooltip and panel says
-"Station Avenue, 4th Cross–5th Cross" instead.
+roads are numbered crosses, and every log line, tooltip, map label and panel
+says "Station Avenue, 4th Cross–5th Cross" instead. Each event also carries the
+place it happened, so an alert anchors to the road it is about rather than to
+whichever road's name happened to appear in the sentence.
 
 **Incident dossiers put belief next to truth.** The simulator privately knows
 whether a road is really blocked; the network only has what was broadcast to it.
@@ -227,7 +262,8 @@ panel answers for that subject.
 The congestion model's own feature attributions are the fourth leg and were
 already there, next to the model in `ai.ts`.
 
-> These three live in the TypeScript engine, which is what the site runs. The
+> These three, and the map itself, live in the TypeScript engine, which is
+> what the site runs. The
 > Python reference has the same physics and the same street naming — the
 > behaviour both suites pin — but not the ledger and dossiers, which are a
 > presentation layer over state both engines already hold.

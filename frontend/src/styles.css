@@ -259,7 +259,215 @@ select, input[type="number"] {
 .map-tools > .chip:last-child { margin-left: auto; }
 .side { display: flex; flex-direction: column; gap: 16px; }
 
-.city-map { width: 100%; height: auto; background: #070d14; border-radius: 8px; }
+/* ------------------------------------------------------------- the map
+   Light, in a dark application, on purpose: a map that looks like a map is
+   one a viewer already knows how to read, and legibility was the whole
+   complaint. */
+.map-canvas { position: relative; border-radius: 10px; overflow: hidden; background: #EFEBE2; }
+/* The city is square, so at full width it is taller than the window and the
+   bottom two streets are below the fold — a map you have to scroll to finish
+   looking at is a map nobody sees the bottom of. Capped against what is left
+   of the viewport once the header, the stat bar and the toolbar have taken
+   their share, with a floor so it stays usable on a short window. */
+.city-map {
+  width: 100%;
+  height: auto;
+  max-height: max(320px, calc(100vh - 420px));
+  display: block;
+  touch-action: none;
+}
+.city-map.draggable { cursor: grab; }
+.city-map.draggable:active { cursor: grabbing; }
+
+.street-label {
+  font-size: 13px;
+  font-weight: 600;
+  fill: #4B463E;
+  text-anchor: middle;
+  letter-spacing: 0.02em;
+  paint-order: stroke;
+  stroke: #F6F4EF;
+  stroke-width: 3.5px;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+.district-label {
+  font-size: 11px;
+  font-weight: 700;
+  fill: #8D8578;
+  text-anchor: middle;
+  letter-spacing: 0.16em;
+  paint-order: stroke;
+  stroke: #F6F4EF;
+  stroke-width: 3px;
+  pointer-events: none;
+}
+.pin-glyph { font-size: 13px; font-weight: 800; fill: #FFFFFF; pointer-events: none; }
+.incident-pin { cursor: pointer; }
+
+/* Zoom, and the reminder that panning exists once zoomed. */
+.map-zoom {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 1px 6px rgba(20, 18, 14, 0.25);
+}
+.map-zoom button {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: #FFFFFF;
+  color: #3B372F;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.map-zoom button:hover { background: #ECE8E0; }
+.map-follow {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  background: #FFFFFF;
+  color: #3B372F;
+  border: none;
+  border-radius: 20px;
+  padding: 6px 13px;
+  font-size: 12px;
+  cursor: pointer;
+  box-shadow: 0 1px 6px rgba(20, 18, 14, 0.25);
+}
+.map-follow.on { background: #1F6FEB; color: #FFFFFF; }
+.map-zoom-hint {
+  position: absolute;
+  bottom: 10px;
+  right: 10px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #5A544A;
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 20px;
+}
+
+/* Layer switches, in the map's own idiom rather than the dashboard's. */
+.map-layers { display: flex; flex-wrap: wrap; gap: 6px; }
+.layer-chip {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 20px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--muted);
+  cursor: pointer;
+}
+.layer-chip.on { background: #1d3a5f; border-color: #2f6bb0; color: #cfe4ff; }
+.map-layers { margin-bottom: 10px; }
+
+/* The message mix, stacked rather than tabulated: five columns in a 360px
+   side panel is a table you have to scroll sideways to read, which is the
+   same as not showing it at all. */
+.frame-mix { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.frame-mix-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.frame-mix-head strong { font-size: 0.86rem; }
+.frame-mix-head span { text-align: right; }
+.frame-mix-bar { height: 5px; border-radius: 3px; background: var(--surface-2); overflow: hidden; margin: 4px 0 3px; }
+.frame-mix-bar span { display: block; height: 100%; background: #3987e5; border-radius: 3px; }
+.frame-mix-nums {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.74rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------------------------------------- the "something happened"
+   popup, anchored to the thing that happened rather than to a corner. */
+.map-alert {
+  position: absolute;
+  z-index: 3;
+  width: min(280px, 78%);
+  transform: translate(-50%, calc(-100% - 18px));
+  background: #FFFFFF;
+  color: #2E2A24;
+  border-radius: 10px;
+  padding: 10px 12px 11px;
+  box-shadow: 0 6px 22px rgba(24, 20, 14, 0.3);
+  border-top: 3px solid var(--alert-tone, #D6453D);
+  font-size: 12.5px;
+  animation: alert-in 0.22s ease-out;
+}
+.map-alert.flip-x { transform: translate(-82%, calc(-100% - 18px)); }
+.map-alert.flip-y { transform: translate(-50%, 18px); }
+.map-alert.flip-x.flip-y { transform: translate(-82%, 18px); }
+.map-alert.alert-bad { --alert-tone: #D6453D; }
+.map-alert.alert-warn { --alert-tone: #E8A33D; }
+.map-alert.alert-suspect { --alert-tone: #9B59D0; }
+@keyframes alert-in { from { opacity: 0; transform: translate(-50%, calc(-100% - 6px)); } }
+
+.map-alert-head { display: flex; align-items: baseline; gap: 7px; }
+.map-alert-head strong { flex: 1; font-size: 13.5px; color: #1F1C17; }
+.map-alert-icon { flex: none; }
+.map-alert-close {
+  flex: none;
+  border: none;
+  background: none;
+  color: #8A8377;
+  font-size: 17px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+}
+.map-alert-where { margin: 3px 0 6px; color: #7C756A; font-size: 11.5px; }
+.map-alert-body { margin: 0 0 6px; }
+.map-alert-verdict { margin: 0 0 5px; font-weight: 600; color: var(--alert-tone); }
+.map-alert-meta { margin: 0; color: #7C756A; font-size: 11.5px; }
+.map-alert-explain {
+  margin-top: 8px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: #1F6FEB;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.map-alert-tail {
+  position: absolute;
+  bottom: -7px;
+  left: 50%;
+  margin-left: -7px;
+  width: 14px;
+  height: 14px;
+  background: #FFFFFF;
+  transform: rotate(45deg);
+  box-shadow: 3px 3px 6px rgba(24, 20, 14, 0.12);
+}
+.map-alert.flip-x .map-alert-tail { left: 82%; }
+.map-alert.flip-y .map-alert-tail { bottom: auto; top: -7px; box-shadow: -3px -3px 6px rgba(24, 20, 14, 0.1); }
+
+.map-alert-offscreen {
+  position: absolute;
+  z-index: 3;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  background: #FFFFFF;
+  color: #2E2A24;
+  border: none;
+  border-radius: 20px;
+  padding: 7px 14px;
+  font-size: 12px;
+  box-shadow: 0 3px 14px rgba(24, 20, 14, 0.28);
+  cursor: pointer;
+}
+
 .segment-group { cursor: pointer; }
 .incident-pulse { animation: pulse 1s infinite; }
 .corridor-pulse { animation: dash 1.2s linear infinite; }
@@ -273,6 +481,16 @@ select, input[type="number"] {
 .legend .line { display: inline-block; width: 18px; height: 4px; margin-right: 5px; vertical-align: middle; border-radius: 2px; }
 .legend .line.dashed-red { background: repeating-linear-gradient(90deg, #e66767 0 4px, transparent 4px 8px); }
 .legend .line.dashed-amber { background: repeating-linear-gradient(90deg, #eda100 0 2px, transparent 2px 6px); }
+/* The incident pin, at legend scale: the same teardrop the map draws. */
+.legend .pin-key {
+  display: inline-block;
+  width: 9px;
+  height: 12px;
+  margin-right: 5px;
+  vertical-align: middle;
+  border-radius: 50% 50% 50% 50% / 42% 42% 62% 62%;
+  clip-path: polygon(50% 100%, 0 45%, 0 0, 100% 0, 100% 45%);
+}
 
 .btn-col { display: flex; flex-direction: column; gap: 8px; }
 button {
@@ -299,6 +517,15 @@ button.danger { background: #2c1414; border-color: #5e2525; color: #f3a8a8; }
 /* --------------------------------------------------- explainability
    The panel that answers "why". Three shapes share it: a road's dossier,
    a vehicle's reasoning, and the running decision feed. */
+.panel.explain h2 { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.explain-clear {
+  border: none;
+  background: none;
+  color: var(--accent);
+  font-size: 0.76rem;
+  padding: 0;
+  cursor: pointer;
+}
 .explain-body { display: flex; flex-direction: column; gap: 10px; }
 .explain-head { display: flex; flex-direction: column; gap: 2px; }
 .explain-head strong { font-size: 0.98rem; }
@@ -592,20 +819,23 @@ button.danger { background: #2c1414; border-color: #5e2525; color: #f3a8a8; }
 }
 
 .street-panel { padding: 14px; }
+/* Same cartography as the city map, at street scale. */
 .street-map {
   width: 100%;
   height: auto;
   display: block;
-  background: radial-gradient(ellipse at 50% 40%, #101b28 0%, #0a1018 70%);
-  border-radius: 8px;
+  background: #EFEBE2;
+  border-radius: 10px;
 }
+
+.street-map .street-label { font-size: 12px; }
 
 .street-vehicle-label {
   font-size: 11px;
   font-weight: 700;
-  fill: #e8edf3;
+  fill: #3B372F;
   paint-order: stroke;
-  stroke: #0a1018;
+  stroke: #F6F4EF;
   stroke-width: 3px;
   stroke-linejoin: round;
 }
