@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 
+import { ExplainPanel } from "../components/ExplainPanel";
 import { Narration } from "../components/Narration";
 import { StreetMap } from "../components/StreetMap";
 import { SPEEDS, guided, useGuided } from "../sim/guidedRuntime";
@@ -280,6 +281,15 @@ export function GuidedDemo() {
           </div>
 
           <KeyNumbers state={state} />
+
+          {/* Click any road or car on the map above and this says why it is
+              doing what it is doing, with the evidence behind it. */}
+          <ExplainPanel
+            state={state}
+            selectedSegment={selectedSegment}
+            selectedVehicle={selectedVehicle}
+          />
+
           <Narration state={state} lines={7} />
         </aside>
       </div>

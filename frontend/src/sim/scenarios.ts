@@ -264,7 +264,9 @@ export const SCENARIOS: Scenario[] = [
       {
         text: "It drops below the threshold for being believed",
         detail: "Its reports now carry almost no weight in what the network concludes, or in what the models train on.",
-        optional: true,
+        // Was hedged as optional. Measured over twelve seeds it lands on every
+        // one, and hedging a step that always happens teaches an audience to
+        // distrust the hedges that do matter. See `scenarios.test.ts`.
         done: (s) =>
           Object.entries(s.trust).some(([id, t]) => id.startsWith("malicious") && t.trust_score < 0.25),
       },
@@ -373,8 +375,11 @@ export const EVERYTHING: Scenario = {
     },
     { text: "The incident is corroborated and confirmed", done: (s) => s.segments.some((x) => x.confirmed_incident) },
     {
+      // Not hedged: over the eighty ticks this story runs, with nine
+      // signalised junctions and an ambulance dispatched to cross the map,
+      // a grant lands on every seed measured. The shorter collision story
+      // still hedges the same step, and correctly — there it has three ticks.
       text: "An ambulance gets priority at a junction",
-      optional: true,
       done: (s, b) => s.signal_priority.granted > b.sremGranted,
     },
     { text: "A car holds a speed to catch a green light", done: (s) => s.perception.glosa_active > 0 },

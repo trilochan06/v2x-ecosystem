@@ -1,3 +1,7 @@
+import type { Decision, IncidentDossier } from "./sim/explain";
+
+export type { Decision, IncidentDossier };
+
 export interface SegmentState {
   id: string;
   a: string;
@@ -25,9 +29,18 @@ export interface VehicleState {
   braking?: boolean;
   /** km/h a red light ahead makes it worth holding, or null for carry on. */
   glosa_advice?: number | null;
-  /** Wrecked and immobile, blocking its lane and announcing the accident. */
+  /** Wrecked and immobile, blocking its lane and announcing the accident.
+   *  Once set it never clears: the wreck leaves on a truck, it does not
+   *  recover and drive on. */
   crashed?: boolean;
-  crashed_ticks?: number;
+  /** Ticks until recovery lifts it out of the carriageway. */
+  recovery_ticks?: number;
+  /** Stopped at the end of a trip, ignition off, transmitting nothing. */
+  parked?: boolean;
+  /** Why it is driving where it is, in words. */
+  trip_purpose?: string;
+  /** The last diversion this vehicle made and what caused it. */
+  last_diversion?: { tick: number; avoided: string[]; reason: string } | null;
 }
 
 /** A collision that actually happened, newest last. */
@@ -35,6 +48,8 @@ export interface CollisionState {
   tick: number;
   segment_id: string;
   vehicles: string[];
+  /** Two on one road, two meeting at a junction, or one on its own. */
+  kind?: "shunt" | "junction" | "solo";
 }
 
 /** A vulnerable road user on a crossing (ETSI TS 103 324 perceived object). */
@@ -302,6 +317,11 @@ export interface SimulationState {
   /** Recent frames on the air, newest last. Bounded — see the engine. */
   transmissions: Transmission[];
   events: EventEntry[];
+  /** Why the system did what it did — see `sim/explain.ts`. */
+  decisions?: Decision[];
+  /** One record per road anyone has an opinion about, putting the network's
+   *  belief next to the ground truth. */
+  dossiers?: IncidentDossier[];
 }
 
 export interface ExperimentRun {

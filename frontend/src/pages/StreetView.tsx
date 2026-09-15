@@ -1,11 +1,13 @@
 import { useState } from "react";
 
+import { ExplainPanel } from "../components/ExplainPanel";
 import { Narration } from "../components/Narration";
 import { StreetMap } from "../components/StreetMap";
 import { Toaster } from "../components/Toaster";
 import { useToaster } from "../components/useToaster";
 import { SPEEDS, demo, useDemo } from "../sim/demoRuntime";
 import type { SimulationState } from "../types";
+import { roadName } from "../sim/core";
 
 /**
  * The simulator for someone who has never seen V2X.
@@ -212,6 +214,13 @@ export function StreetView() {
 
           {state.pedestrians.length > 0 && <PedestrianInspector state={state} />}
 
+          {/* Why, not just what. Follows whatever is selected on the map. */}
+          <ExplainPanel
+            state={state}
+            selectedSegment={selectedSegment}
+            selectedVehicle={selectedVehicle}
+          />
+
           <Narration state={state} />
 
           {vehicle ? (
@@ -233,7 +242,7 @@ export function StreetView() {
   );
 }
 
-const road = (id: string) => id.replace("_", " → ");
+const road = roadName;
 
 /**
  * The three things a connected car does that an unconnected one cannot.

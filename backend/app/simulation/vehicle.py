@@ -33,7 +33,7 @@ from app.network.messages import (
     cause_for,
 )
 from app.network.security import sign
-from app.simulation.world import HAZARD_TYPES, CityGrid
+from app.simulation.world import HAZARD_TYPES, TRIP_PURPOSE, CityGrid
 
 VehicleKind = Literal["car", "ambulance", "malicious"]
 
@@ -95,9 +95,26 @@ AVOID_SEGMENT_PENALTY = 12.0
 # shorter route still shorter.
 ROUTE_JITTER = 0.25
 
-# How long a wreck sits in the carriageway before it is cleared and the
-# vehicles rejoin traffic.
-CRASH_IMMOBILE_TICKS = 22
+# How long a vehicle stays put once it arrives.
+#
+# A trip that ends by instantly starting another one is a random walk wearing a
+# destination. A short stop makes arrivals visible, and means the number of
+# vehicles actually moving varies over the day rather than being constant by
+# construction.
+DWELL_TICKS = (4, 12)
+
+# How long a vehicle stands by a decision to avoid a road.
+#
+# Without this, a vehicle diverts off a congested road, hears one report about
+# the road it diverted onto, and swings straight back -- and because the two
+# roads keep reporting on each other it oscillates for as long as the trip
+# lasts. Real navigation commits for a while; so does this.
+AVOID_COMMIT_TICKS = 40
+
+# How long recovery takes to reach a wreck and lift it off the carriageway.
+# Until then the wreck is immobile, blocking its lane and broadcasting; after
+# it, the wreck leaves the city on a truck. It does not drive away.
+RECOVERY_TICKS = 22
 # A wrecked vehicle re-announces itself on this duty cycle. Every tick would
 # be both unrealistic and a denial of service on its own neighbours.
 CRASH_REPORT_INTERVAL_TICKS = 3
@@ -153,11 +170,28 @@ class Vehicle:
     glosa_advice: float | None = None
 
     # --- collision -------------------------------------------------------
-    #: Ticks left before the wreck is cleared. While non-zero this vehicle is
-    #: immobile, blocking its lane, and announcing the accident.
-    crashed_ticks: int = 0
+    #: Once true, always true. A vehicle that has been in a collision is a
+    #: wreck: it does not drive again, and it leaves the city on a truck.
+    crashed: bool = False
     #: Tick the collision happened, so the UI can say how long ago.
     crashed_at_tick: int = -1
+    #: Ticks until recovery lifts the wreck out of the carriageway. Reaching
+    #: zero is the engine's cue to remove it, not the vehicle's cue to move.
+    recovery_ticks: int = 0
+
+    # --- trips -----------------------------------------------------------
+    #: Why this vehicle is driving where it is driving, in words.
+    trip_purpose: str = ""
+    #: Ticks left parked at the end of a trip.
+    dwell_ticks: int = 0
+    #: Roads this vehicle decided to avoid, and until when. Kept so a
+    #: diversion is a decision that holds rather than one it reverses next
+    #: tick. segment_id -> tick the commitment expires.
+    _avoiding: dict[str, int] = field(default_factory=dict)
+    #: The most recent diversion and what caused it, for the explanation
+    #: panel. Cleared by nothing: the last decision a vehicle made stays
+    #: inspectable.
+    last_diversion: dict | None = None
 
     # --- M6b: intent coordination ----------------------------------------
     #: What peers have announced they intend to drive. segment_id -> (claims,
@@ -174,11 +208,25 @@ class Vehicle:
 
     # ------------------------------------------------------------- routing
     def _pick_new_destination(self, tick: int = 0) -> None:
+        """Choose somewhere to go, and a reason for going there.
+
+        Destinations are drawn in proportion to what a place is for, not
+        uniformly: the centre pulls hardest, the estate next, and housing
+        least. That is what makes the evening jam form in the middle of the
+        map on its own, rather than only when the hazard injector puts it
+        there.
+        """
         candidates = [n for n in self.grid.nodes if n != self.node]
-        self.destination = random.choice(candidates)
+        if self.kind == "ambulance":
+            self.destination = random.choice(candidates)
+        else:
+            weights = [self.grid.attraction(n) for n in candidates]
+            self.destination = random.choices(candidates, weights=weights, k=1)[0]
+        self.trip_purpose = TRIP_PURPOSE[self.grid.land_use(self.destination)]
         self.route = self.grid.shortest_path(self.node, self.destination)
         self.progress = 0.0
         self.trip_started_tick = tick
+        self._avoiding.clear()
 
     @property
     def next_node(self) -> str | None:
@@ -203,11 +251,20 @@ class Vehicle:
 
         Returns `(outbound_messages, rerouted, trip_ticks_or_None)`.
         """
-        nxt = self.next_node
         outbound: list[Message] = []
         rerouted = False
         completed_trip: int | None = None
 
+        # Parked at the end of a trip. The ignition is off, so nothing goes on
+        # the air -- a stationary car filling the channel with CAMs would be
+        # both wrong and the loudest thing on the map.
+        if self.dwell_ticks > 0:
+            self.dwell_ticks -= 1
+            if self.dwell_ticks == 0:
+                self._pick_new_destination(tick)
+            return outbound, rerouted, completed_trip
+
+        nxt = self.next_node
         if nxt is None:
             return outbound, rerouted, completed_trip
 
@@ -215,10 +272,10 @@ class Vehicle:
         seg.occupancy = min(1.0, seg.occupancy + (0.02 if self.kind == "ambulance" else 0.05))
 
         # A wreck does not drive. It sits in the lane, blocks it, and keeps
-        # announcing itself until it is cleared -- which is what gives the
-        # traffic behind time to be warned and rerouted.
-        if self.crashed_ticks > 0:
-            self.crashed_ticks -= 1
+        # announcing itself until recovery lifts it out -- which is what gives
+        # the traffic behind time to be warned and rerouted.
+        if self.crashed:
+            self.recovery_ticks = max(0, self.recovery_ticks - 1)
             seg.occupancy = min(1.0, seg.occupancy + CRASH_LANE_BLOCKAGE)
             self.glosa_advice = None
             # A wreck is stationary, not deaf and blind. It already announces
@@ -267,7 +324,11 @@ class Vehicle:
             self.route.pop(0)
             if len(self.route) <= 1:
                 completed_trip = tick - self.trip_started_tick
-                self._pick_new_destination(tick)
+                # Arrived. Park for a few ticks before setting off again, so a
+                # trip ends somewhere instead of bouncing straight off its
+                # destination.
+                self.dwell_ticks = random.randint(*DWELL_TICKS)
+                self.route = [self.node]
 
         hazard_msg = self._maybe_report_hazard(seg, self._lookahead_segment(), tick)
         if hazard_msg is not None:
@@ -292,7 +353,7 @@ class Vehicle:
                     outbound.append(intent)
 
             if allow_rerouting:
-                rerouted = self._maybe_reroute(tick)
+                rerouted = self.reroute(tick)
 
         return outbound, rerouted, completed_trip
 
@@ -379,16 +440,21 @@ class Vehicle:
 
     # --------------------------------------------------------- collision
     def crash(self, tick: int) -> None:
-        """Involve this vehicle in a collision. The engine calls this on both
-        parties at once."""
-        self.crashed_ticks = CRASH_IMMOBILE_TICKS
+        """Involve this vehicle in a collision. The engine calls this on every
+        party at once."""
+        self.crashed = True
         self.crashed_at_tick = tick
+        self.recovery_ticks = RECOVERY_TICKS
         self.braking_ticks = 0
+        self.dwell_ticks = 0
         self.yield_instruction = None
+        self.glosa_advice = None
 
     @property
-    def crashed(self) -> bool:
-        return self.crashed_ticks > 0
+    def ready_for_recovery(self) -> bool:
+        """True once recovery has reached the wreck. The engine tows it away;
+        the wreck never decides for itself that it is fine now."""
+        return self.crashed and self.recovery_ticks == 0
 
     def _report_crash(self, seg, tick: int) -> Message | None:
         """The wreck announcing itself: DENM causeCode 2, accident.
@@ -597,18 +663,36 @@ class Vehicle:
         claims, heard = self.peer_intent.get(segment_id, (0, -999))
         return claims if tick - heard <= INTENT_STALE_TICKS else 0
 
-    def _maybe_reroute(self, tick: int) -> bool:
+    def reroute(self, tick: int) -> bool:
+        """Divert around roads this vehicle has been warned about.
+
+        The one rule that governs this: **the link under the wheels is already
+        committed.** Replanning from `node` lets the search answer "turn
+        around", and since `progress` is a fraction of whatever link the route
+        now begins with, a car 80% of the way down one road reappears 80% of
+        the way down a different one. That is the teleporting -- not a drawing
+        bug but a physics one, and it is why this plans from the junction ahead
+        and puts the current link back in front of the answer.
+
+        Public so a test can trigger a diversion at a known moment rather than
+        waiting for one to happen by chance.
+        """
         if self.kind == "ambulance":
             return False  # priority vehicles hold their path; traffic yields instead
         if tick < self._reroute_cooldown_until or len(self.route) < 3:
             return False
 
+        # Roads still worth avoiding from an earlier decision, so a diversion
+        # is not undone the moment the road it diverted onto reports in.
+        avoid = {seg_id for seg_id, until in self._avoiding.items() if tick < until}
+        self._avoiding = {seg_id: until for seg_id, until in self._avoiding.items() if tick < until}
+
         upcoming = self.route[1 : REROUTE_LOOKAHEAD_HOPS + 2]
-        avoid: set[str] = set()
+        fresh: set[str] = set()
         for i in range(len(upcoming) - 1):
             seg = self.grid.segment_between(upcoming[i], upcoming[i + 1])
             if self._recent_warning(seg.id, tick):
-                avoid.add(seg.id)
+                fresh.add(seg.id)
                 continue
             info = self.known_occupancy.get(seg.id)
             if info is None:
@@ -617,20 +701,40 @@ class Vehicle:
             if tick - heard_tick > PEER_INFO_STALE_TICKS:
                 continue
             if occupancy >= CONGESTION_REROUTE_THRESHOLD:
-                avoid.add(seg.id)
+                fresh.add(seg.id)
 
-        if not avoid:
+        if not fresh:
             return False
+        avoid |= fresh
 
-        new_route = self._detour(frozenset(avoid), tick)
-        if new_route and new_route != self.route:
-            self.route = new_route
-            self._reroute_cooldown_until = tick + REROUTE_COOLDOWN_TICKS
-            self.reroute_count += 1
-            return True
-        return False
+        # Part-way down a road, the only thing still open is what happens after
+        # the junction ahead; at a junction, everything is open.
+        committed = self.progress > 0 and self.next_node is not None
+        start = self.next_node if committed else self.node
+        tail = self._detour(frozenset(avoid), tick, start)
+        if not tail:
+            return False
+        new_route = [self.node, *tail] if committed else tail
 
-    def _detour(self, avoid: frozenset[str], tick: int) -> list[str]:
+        if new_route == self.route:
+            return False
+        self.route = new_route
+        for seg_id in fresh:
+            self._avoiding[seg_id] = tick + AVOID_COMMIT_TICKS
+        self._reroute_cooldown_until = tick + REROUTE_COOLDOWN_TICKS
+        self.reroute_count += 1
+        self.last_diversion = {
+            "tick": tick,
+            "avoided": sorted(fresh),
+            "reason": (
+                "a hazard a peer reported"
+                if any(self._recent_warning(seg_id, tick) for seg_id in fresh)
+                else "congestion a peer reported"
+            ),
+        }
+        return True
+
+    def _detour(self, avoid: frozenset[str], tick: int, start: str | None = None) -> list[str]:
         """Pick a way around the roads this vehicle has been warned about.
 
         Without coordination this is a breadth-first search, so two vehicles
@@ -645,8 +749,11 @@ class Vehicle:
         vehicle picks the second-best road instead. No central assignment and
         no negotiation -- just each vehicle reacting to what it was told.
         """
+        start = self.node if start is None else start
+        if start == self.destination:
+            return [start]
         if not self.intent_coordination:
-            return self.grid.shortest_path_avoiding(self.node, self.destination, avoid)
+            return self.grid.shortest_path_avoiding(start, self.destination, avoid)
 
         def cost(seg) -> float:
             penalty = AVOID_SEGMENT_PENALTY if seg.id in avoid else 1.0
@@ -658,10 +765,10 @@ class Vehicle:
                 * (1.0 + self._route_jitter(seg.id))
             )
 
-        route = self.grid.least_cost_path(self.node, self.destination, cost)
+        route = self.grid.least_cost_path(start, self.destination, cost)
         # Unreachable under this cost (it should not be, since nothing is
         # banned outright) -- fall back rather than strand the vehicle.
-        return route or self.grid.shortest_path_avoiding(self.node, self.destination, avoid)
+        return route or self.grid.shortest_path_avoiding(start, self.destination, avoid)
 
     # -------------------------------------------------------------- views
     def to_state(self) -> dict:
@@ -683,5 +790,10 @@ class Vehicle:
             "braking": self.braking_ticks > 0,
             "glosa_advice": round(self.glosa_advice, 1) if self.glosa_advice is not None else None,
             "crashed": self.crashed,
-            "crashed_ticks": self.crashed_ticks,
+            "recovery_ticks": self.recovery_ticks,
+            "parked": self.dwell_ticks > 0,
+            "trip_purpose": self.trip_purpose,
+            # What this vehicle last decided and why, so a viewer can click a
+            # car and be told the reason rather than left to infer it.
+            "last_diversion": self.last_diversion,
         }

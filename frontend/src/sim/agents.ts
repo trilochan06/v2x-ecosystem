@@ -12,8 +12,10 @@ import {
   PERCEIVED_OBJECT_BYTES,
   Rng,
   Segment,
+  TRIP_PURPOSE,
   causeFor,
   makeMessage,
+  weightedPick,
 } from "./core";
 
 // ----------------------------------------------------------- vehicle
@@ -34,8 +36,10 @@ const PEDESTRIAN_CAUTION_FACTOR = 0.45;
 /** Closer than this to the junction, holding a speed for the green is worth
  *  advising. */
 const GLOSA_APPROACH_PROGRESS = 0.35;
-/** How long a wreck sits in the carriageway before it is cleared. */
-const CRASH_IMMOBILE_TICKS = 22;
+/** How long recovery takes to reach a wreck and lift it off the carriageway.
+ *  Until then the wreck is immobile, blocking its lane and broadcasting; after
+ *  it, the wreck leaves the city on a truck. It does not drive away. */
+const RECOVERY_TICKS = 22;
 /** A wrecked vehicle re-announces itself on this duty cycle. Every tick would
  *  be both unrealistic and a denial of service on its own neighbours. */
 const CRASH_REPORT_INTERVAL_TICKS = 3;
@@ -67,6 +71,24 @@ const AVOID_SEGMENT_PENALTY = 12;
  * pricing, just determinism.
  */
 const ROUTE_JITTER = 0.25;
+/**
+ * How long a vehicle stays put once it arrives.
+ *
+ * A trip that ends by instantly starting another one is a random walk wearing
+ * a destination. A short stop makes arrivals visible, and means the number of
+ * vehicles actually moving varies over the day rather than being constant by
+ * construction.
+ */
+const DWELL_TICKS = [4, 12] as const;
+/**
+ * How long a vehicle stands by a decision to avoid a road.
+ *
+ * Without this, a vehicle diverts off a congested road, hears one report about
+ * the road it diverted onto, and swings straight back — and because the two
+ * roads keep reporting on each other it oscillates for as long as the trip
+ * lasts. Real navigation commits for a while; so does this.
+ */
+const AVOID_COMMIT_TICKS = 40;
 const HAZARD_SENSE_PROBABILITY = 0.6;
 const LOOKAHEAD_SENSE_PROBABILITY = 0.3;
 const SENSOR_NOISE_PROBABILITY = 0.004;
@@ -91,10 +113,13 @@ export class Vehicle {
   knownSignals = new Map<string, { phase: string; tick: number }>();
   glosaAdvice: number | null = null;
   // --- collision
-  /** Ticks left before the wreck is cleared. While non-zero this vehicle is
-   *  immobile, blocking its lane, and announcing the accident. */
-  crashedTicks = 0;
+  /** Once true, always true. A vehicle that has been in a collision is a
+   *  wreck: it does not drive again, and it leaves the city on a truck. */
+  crashed = false;
   crashedAtTick = -1;
+  /** Ticks until recovery lifts the wreck out of the carriageway. Reaching
+   *  zero is the engine's cue to remove it, not the vehicle's cue to move. */
+  recoveryTicks = 0;
   // --- M6b: intent coordination
   /** What peers have announced they intend to drive. Written only by
    *  `receiveIntent`, so like every other peer belief it exists because a
@@ -108,6 +133,13 @@ export class Vehicle {
    *  global state. */
   knownOccupancy = new Map<string, { occupancy: number; tick: number }>();
   hazardWarnings = new Map<string, number>();
+  /** Why this vehicle is driving where it is driving, in words. */
+  tripPurpose = "";
+  /** Ticks left parked at the end of a trip. */
+  dwellTicks = 0;
+  /** Roads this vehicle decided to avoid, and until when. Kept so a diversion
+   *  is a decision that holds rather than one it reverses next tick. */
+  private avoiding = new Map<string, number>();
   private rerouteCooldownUntil = 0;
 
   constructor(
@@ -122,12 +154,25 @@ export class Vehicle {
     this.pickNewDestination(tick);
   }
 
+  /**
+   * Choose somewhere to go, and a reason for going there.
+   *
+   * Destinations are drawn in proportion to what a place is for, not
+   * uniformly: the centre pulls hardest, the estate next, and housing least.
+   * That is what makes the evening jam form in the middle of the map on its
+   * own, rather than only when the hazard injector puts it there.
+   */
   private pickNewDestination(tick: number) {
     const candidates = [...this.grid.nodes.keys()].filter((n) => n !== this.node);
-    this.destination = this.rng.pick(candidates);
+    this.destination =
+      this.kind === "ambulance"
+        ? this.rng.pick(candidates)
+        : weightedPick(candidates, (n) => this.grid.attraction(n), this.rng);
+    this.tripPurpose = TRIP_PURPOSE[this.grid.landUse(this.destination)];
     this.route = this.grid.shortestPath(this.node, this.destination);
     this.progress = 0;
     this.tripStartedTick = tick;
+    this.avoiding.clear();
   }
 
   get nextNode(): string | null {
@@ -152,6 +197,15 @@ export class Vehicle {
     let rerouted = false;
     let completedTrip: number | null = null;
 
+    // Parked at the end of a trip. The ignition is off, so nothing goes on
+    // the air — a stationary car filling the channel with CAMs would be both
+    // wrong and the loudest thing on the map.
+    if (this.dwellTicks > 0) {
+      this.dwellTicks -= 1;
+      if (this.dwellTicks === 0) this.pickNewDestination(tick);
+      return { outbound, rerouted, completedTrip };
+    }
+
     const nxt = this.nextNode;
     if (!nxt) return { outbound, rerouted, completedTrip };
 
@@ -159,10 +213,10 @@ export class Vehicle {
     seg.occupancy = Math.min(1, seg.occupancy + (this.kind === "ambulance" ? 0.02 : 0.05));
 
     // A wreck does not drive. It sits in the lane, blocks it, and keeps
-    // announcing itself until it is cleared — which is what gives the traffic
-    // behind time to be warned and rerouted.
-    if (this.crashedTicks > 0) {
-      this.crashedTicks -= 1;
+    // announcing itself until recovery lifts it out — which is what gives the
+    // traffic behind time to be warned and rerouted.
+    if (this.crashed) {
+      this.recoveryTicks = Math.max(0, this.recoveryTicks - 1);
       seg.occupancy = Math.min(1, seg.occupancy + CRASH_LANE_BLOCKAGE);
       this.glosaAdvice = null;
       // A wreck is stationary, not deaf and blind. It already announces the
@@ -204,7 +258,10 @@ export class Vehicle {
       this.route.shift();
       if (this.route.length <= 1) {
         completedTrip = tick - this.tripStartedTick;
-        this.pickNewDestination(tick);
+        // Arrived. Park for a few ticks before setting off again, so a trip
+        // ends somewhere instead of bouncing straight off its destination.
+        this.dwellTicks = this.rng.int(DWELL_TICKS[0], DWELL_TICKS[1]);
+        this.route = [this.node];
       }
     }
 
@@ -226,7 +283,7 @@ export class Vehicle {
         if (intent) outbound.push(intent);
       }
 
-      if (allowRerouting) rerouted = this.maybeReroute(tick);
+      if (allowRerouting) rerouted = this.reroute(tick);
     }
 
     return { outbound, rerouted, completedTrip };
@@ -340,14 +397,19 @@ export class Vehicle {
   /** Involve this vehicle in a collision. The engine calls it on both
    *  parties at once. */
   crash(tick: number) {
-    this.crashedTicks = CRASH_IMMOBILE_TICKS;
+    this.crashed = true;
     this.crashedAtTick = tick;
+    this.recoveryTicks = RECOVERY_TICKS;
     this.brakingTicks = 0;
+    this.dwellTicks = 0;
     this.yieldInstruction = null;
+    this.glosaAdvice = null;
   }
 
-  get crashed(): boolean {
-    return this.crashedTicks > 0;
+  /** True once recovery has reached the wreck. The engine tows it away; the
+   *  wreck never decides for itself that it is fine now. */
+  get readyForRecovery(): boolean {
+    return this.crashed && this.recoveryTicks === 0;
   }
 
   /** The wreck announcing itself: DENM causeCode 2, accident.
@@ -518,33 +580,73 @@ export class Vehicle {
     return heard !== undefined && tick - heard <= PEER_INFO_STALE_TICKS;
   }
 
-  private maybeReroute(tick: number): boolean {
+  /**
+   * Divert around roads this vehicle has been warned about.
+   *
+   * The one rule that governs this: **the link under the wheels is already
+   * committed.** Replanning from `node` lets the search answer "turn around",
+   * and since `progress` is a fraction of whatever link the route now begins
+   * with, a car 80% of the way down one road reappears 80% of the way down a
+   * different one. That is the teleporting — not a drawing bug but a physics
+   * one, and it is why this plans from the junction ahead and puts the current
+   * link back in front of the answer.
+   *
+   * Public so a test can trigger a diversion at a known moment rather than
+   * waiting for one to happen by chance.
+   */
+  reroute(tick: number): boolean {
     if (this.kind === "ambulance") return false;
     if (tick < this.rerouteCooldownUntil || this.route.length < 3) return false;
 
-    const upcoming = this.route.slice(1, REROUTE_LOOKAHEAD_HOPS + 2);
+    // Roads still worth avoiding from an earlier decision, so a diversion is
+    // not undone the moment the road it diverted onto reports in.
     const avoid = new Set<string>();
+    for (const [segId, until] of this.avoiding) {
+      if (tick < until) avoid.add(segId);
+      else this.avoiding.delete(segId);
+    }
+
+    const upcoming = this.route.slice(1, REROUTE_LOOKAHEAD_HOPS + 2);
+    const fresh = new Set<string>();
     for (let i = 0; i < upcoming.length - 1; i++) {
       const seg = this.grid.segmentBetween(upcoming[i], upcoming[i + 1]);
       if (this.recentWarning(seg.id, tick)) {
-        avoid.add(seg.id);
+        fresh.add(seg.id);
         continue;
       }
       const info = this.knownOccupancy.get(seg.id);
       if (!info || tick - info.tick > PEER_INFO_STALE_TICKS) continue;
-      if (info.occupancy >= CONGESTION_REROUTE_THRESHOLD) avoid.add(seg.id);
+      if (info.occupancy >= CONGESTION_REROUTE_THRESHOLD) fresh.add(seg.id);
     }
-    if (!avoid.size) return false;
+    if (!fresh.size) return false;
+    for (const segId of fresh) avoid.add(segId);
 
-    const newRoute = this.detour(avoid, tick);
-    if (newRoute.length && newRoute.join() !== this.route.join()) {
-      this.route = newRoute;
-      this.rerouteCooldownUntil = tick + REROUTE_COOLDOWN_TICKS;
-      this.rerouteCount += 1;
-      return true;
-    }
-    return false;
+    // Part-way down a road, the only thing still open is what happens after
+    // the junction ahead; at a junction, everything is open.
+    const committed = this.progress > 0 && this.nextNode !== null;
+    const from = committed ? this.nextNode! : this.node;
+    const tail = this.detour(avoid, tick, from);
+    if (!tail.length) return false;
+    const newRoute = committed ? [this.node, ...tail] : tail;
+
+    if (newRoute.join() === this.route.join()) return false;
+    this.route = newRoute;
+    for (const segId of fresh) this.avoiding.set(segId, tick + AVOID_COMMIT_TICKS);
+    this.rerouteCooldownUntil = tick + REROUTE_COOLDOWN_TICKS;
+    this.rerouteCount += 1;
+    this.lastDiversion = {
+      tick,
+      avoided: [...fresh],
+      reason: [...fresh].some((segId) => this.recentWarning(segId, tick))
+        ? "a hazard a peer reported"
+        : "congestion a peer reported",
+    };
+    return true;
   }
+
+  /** The most recent diversion and what caused it, for the explanation panel.
+   *  Cleared by nothing: the last decision a vehicle made stays inspectable. */
+  lastDiversion: { tick: number; avoided: string[]; reason: string } | null = null;
 
   /**
    * Pick a way around the roads this vehicle has been warned about.
@@ -558,9 +660,10 @@ export class Vehicle {
    * announced, and tie-broken per vehicle. Public so the tests can show the
    * herding and its fix directly.
    */
-  detour(avoid: Set<string>, tick: number): string[] {
+  detour(avoid: Set<string>, tick: number, from: string = this.node): string[] {
+    if (from === this.destination) return [from];
     if (!this.intentCoordination)
-      return this.grid.shortestPathAvoiding(this.node, this.destination, avoid);
+      return this.grid.shortestPathAvoiding(from, this.destination, avoid);
 
     const cost = (seg: Segment) =>
       seg.lengthM *
@@ -568,10 +671,10 @@ export class Vehicle {
       (1 + INTENT_CLAIM_WEIGHT * this.claimedByPeers(seg.id, tick)) *
       (1 + this.routeJitter(seg.id));
 
-    const route = this.grid.leastCostPath(this.node, this.destination, cost);
+    const route = this.grid.leastCostPath(from, this.destination, cost);
     // Unreachable under this cost (it should not be, since nothing is banned
     // outright) — fall back rather than strand the vehicle.
-    return route.length ? route : this.grid.shortestPathAvoiding(this.node, this.destination, avoid);
+    return route.length ? route : this.grid.shortestPathAvoiding(from, this.destination, avoid);
   }
 
   toState() {
@@ -592,7 +695,12 @@ export class Vehicle {
       braking: this.brakingTicks > 0,
       glosa_advice: this.glosaAdvice === null ? null : Math.round(this.glosaAdvice * 10) / 10,
       crashed: this.crashed,
-      crashed_ticks: this.crashedTicks,
+      recovery_ticks: this.recoveryTicks,
+      parked: this.dwellTicks > 0,
+      trip_purpose: this.tripPurpose,
+      // What this vehicle last decided and why, so a viewer can click a car
+      // and be told the reason rather than left to infer it from the map.
+      last_diversion: this.lastDiversion,
     };
   }
 }

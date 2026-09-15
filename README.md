@@ -73,14 +73,19 @@ optimistic). "Separated" means the two intervals do not overlap.
 
 | Metric | Exp 1 — Centralized | Exp 3 — Proposed | Separated? |
 | --- | --- | --- | --- |
-| Cloud uplink overhead (KB/tick) | 2.843 ± 0.089 | **0.323 ± 0.000** | **yes — −88.6%** |
+| Cloud uplink overhead (KB/tick) | 2.820 ± 0.058 | **0.323 ± 0.000** | **yes — −88.5%** |
 | Availability during cloud outage | 0.0 ± 0.0 % | **100.0 ± 0.0 %** | **yes — +100 pts** |
-| Hazard detection precision | 0.885 ± 0.038 | **0.988 ± 0.019** | **yes — +0.10** |
-| Hazard detection F1 | 0.424 ± 0.212 | 0.564 ± 0.181 | no — intervals overlap |
-| Hazard-to-warning latency (ticks) | 19.8 ± 7.2 | 14.7 ± 6.0 | no — intervals overlap |
-| Mobility (segments / 100 vehicle-ticks) | 1.233 ± 0.044 | 1.273 ± 0.044 | no — intervals overlap |
+| Hazard detection precision | 0.874 ± 0.065 | **0.988 ± 0.027** | **yes — +0.11** |
+| Hazard detection F1 | 0.302 ± 0.216 | 0.483 ± 0.160 | no — intervals overlap |
+| Hazard-to-warning latency (ticks) | 22.2 ± 11.0 | 15.0 ± 9.1 | no — intervals overlap |
+| Mobility (segments / 100 vehicle-ticks) | 1.225 ± 0.032 | 1.260 ± 0.033 | no — intervals overlap |
 | Federated rounds completed | 0 | 24 | — |
 | Raw telemetry avoided by FL | — | 275.6 KB | — |
+
+These were re-measured after the vehicle model was corrected — see [Vehicle
+motion, and why it was wrong](#vehicle-motion-and-why-it-was-wrong). Every
+figure moved a little; **which three separate and which three do not did not
+change.**
 
 **Three results hold up and three do not, and the difference matters.**
 
@@ -92,12 +97,12 @@ digests, twin sync and federated weights.
 
 F1, alert latency and mobility do **not** separate at five seeds. Earlier
 single-seed runs of this project reported a 46% latency improvement; across five
-seeds that shrinks to 25.6% with intervals that overlap almost entirely, because
-corroborated alerts are rare events — about seven per run — and the mean moves a
-long way between seeds. The honest statement is that this simulation does not
-demonstrate a latency improvement at this sample size. The site says so too: the
-Experiments page prints "intervals overlap — not separated at this sample size"
-rather than quoting the difference.
+seeds the point estimate is 32.4% with intervals that overlap almost entirely,
+because corroborated alerts are rare events — a handful per run — and the mean
+moves a long way between seeds. The honest statement is that this simulation
+does not demonstrate a latency improvement at this sample size. The site says so
+too: the Experiments page prints "intervals overlap — not separated at this
+sample size" rather than quoting the difference.
 
 **Traffic impact remains the weakest result.** Mobility differs by 3% with
 intervals that overlap, and under heavy congestion the rerouting configurations
@@ -153,6 +158,79 @@ Exp 4 therefore ships **disabled** and exists only as the experiment that
 measured it. Concluding "coordination helps" from the mobility metric alone
 would have been easy — `segments_per_100_vehicle_ticks` rose 4.1% on 8/8 seeds —
 and wrong, because that metric rewards driving further rather than arriving.
+
+## Vehicle motion, and why it was wrong
+
+The simulation measured well and looked wrong, which is the failure mode worth
+being loudest about: a metric can be right while the picture is nonsense, and
+the picture is what an audience judges. Three defects, all now fixed in both
+engines and pinned by `frontend/src/sim/motion.test.ts` and
+`backend/tests/test_motion.py`.
+
+**Vehicles teleported.** Rerouting replanned from the vehicle's current node
+while leaving `progress` — the fraction driven along the *current* link —
+untouched. A car 80% of the way down one road got a route beginning with a
+different road and was drawn 80% of the way down that one instead: an
+instantaneous jump across the map, several times a minute. It was a physics bug,
+not a drawing one. A vehicle is now committed to the link under its wheels and
+replans from the junction ahead, so a diversion begins where a diversion can
+begin. Measured over 400 ticks with 14 vehicles, that is 23 teleports before and
+none after.
+
+**Wrecked cars drove away.** A collision immobilised both vehicles for 22 ticks,
+after which they simply resumed their journeys. A wreck is now permanent: it
+blocks its lane and broadcasts until a recovery vehicle removes it from the
+network, and a replacement enters elsewhere so density holds steady. Staging a
+collision also used to spawn a car and place it on the victim's road when no two
+vehicles shared one — a teleport in front of the audience. There are now three
+kinds of collision, and all three use vehicles that are already where they are:
+a shunt, a junction collision between two converging approaches, and a
+single-vehicle accident.
+
+**Traffic was a random walk.** On arrival every vehicle drew a uniformly random
+node and set off again, so there was no rush towards anywhere and congestion
+could only come from the hazard injector — the congestion forecaster was
+predicting noise. The grid now has land use (centre, civic quarter, industrial
+estate, residential); destinations are drawn in proportion to it, and a vehicle
+parks for a few ticks at the end of a trip instead of bouncing off it. Jams now
+form in the middle of the map on their own.
+
+## Explaining what the system is doing
+
+Three mechanisms, because "why" means three different things here.
+
+**Streets have names.** `5-3_5-4` is not something anyone can hold in their
+head, and an event log that reads like a matrix index is the main reason a
+viewer cannot follow the system. North–south roads are named avenues, east–west
+roads are numbered crosses, and every log line, tooltip and panel says
+"Station Avenue, 4th Cross–5th Cross" instead.
+
+**Incident dossiers put belief next to truth.** The simulator privately knows
+whether a road is really blocked; the network only has what was broadcast to it.
+For every road anyone has an opinion about, the dossier reports both, together
+with the DENM cause code, the corroboration latency, and each witness by
+*pseudonym* — never by the vehicle behind it, because a debugging view that
+undid M11's unlinkability would be describing a different system from the one
+being measured. The verdict is the interesting field: **a confirmed incident
+with nothing behind it is a false positive, and that is exactly what an
+attacker's fabricated report looks like from the inside.** It is the same event
+the precision figure counts, made inspectable one road at a time.
+
+**A decision ledger records the argument, not the outcome.** Every consequential
+decision — a diversion, a corroboration, a revocation, a collision, a recovery,
+an outage — writes down the evidence it had, the rule it applied with the
+threshold it tested, and what changed. The entry is written by the code that
+takes the decision, at the moment it takes it, so it cannot be a narration
+reconstructed from the result. Click any road or any car on the map and the
+panel answers for that subject.
+
+The congestion model's own feature attributions are the fourth leg and were
+already there, next to the model in `ai.ts`.
+
+> These three live in the TypeScript engine, which is what the site runs. The
+> Python reference has the same physics and the same street naming — the
+> behaviour both suites pin — but not the ledger and dossiers, which are a
+> presentation layer over state both engines already hold.
 
 ## Standards
 

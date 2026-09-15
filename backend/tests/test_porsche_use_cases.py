@@ -249,23 +249,23 @@ def test_the_city_keeps_stepping_after_vehicles_are_removed():
 
 
 # ------------------------------------------------------------- collisions
-def test_a_collision_immobilises_both_vehicles_and_blocks_the_lane():
-    engine = run(scene(), 10)
+def test_a_collision_immobilises_every_vehicle_in_it_and_blocks_the_lane():
+    engine = run(scene(vehicles=16), 10)
     info = engine.trigger_collision()
     assert info is not None
 
-    first, second = (engine.vehicles[v] for v in info["vehicles"])
-    assert first.crashed and second.crashed
+    involved = [engine.vehicles[v] for v in info["vehicles"]]
+    assert all(v.crashed for v in involved)
     assert engine.grid.segments[info["segment_id"]].hazard_active
 
-    before = first.position_xy()
+    before = involved[0].position_xy()
     run(engine, 5)
     # A wreck does not drive away from its own accident.
-    assert first.position_xy() == before
+    assert involved[0].position_xy() == before
 
 
 def test_a_wreck_announces_itself_and_the_network_confirms_it():
-    engine = run(scene(), 10)
+    engine = run(scene(vehicles=16), 10)
     info = engine.trigger_collision()
     run(engine, 30)
 
@@ -275,21 +275,41 @@ def test_a_wreck_announces_itself_and_the_network_confirms_it():
     assert frames.get("DENM", 0) > 0
 
 
-def test_the_wreck_is_eventually_cleared():
+def test_the_wreck_is_recovered_rather_than_driving_away():
     engine = run(scene(), 10)
-    engine.trigger_collision()
+    info = engine.trigger_collision()
     run(engine, 40)
+    # Gone from the city entirely. It used to sit still for twenty-two ticks
+    # and then resume its journey, which is not something a wrecked car does.
+    for vid in info["vehicles"]:
+        assert vid not in engine.vehicles
     assert not any(v.crashed for v in engine.vehicles.values())
 
 
-def test_a_collision_needs_two_vehicles_and_says_when_it_staged_one():
+def test_a_lone_vehicle_has_a_single_vehicle_accident():
     engine = run(scene(vehicles=1), 6)
     info = engine.trigger_collision()
     assert info is not None
-    # One vehicle in the city, so the second had to be brought in -- and the
-    # result says so rather than pretending traffic did it.
-    assert info["staged"] is True
-    assert len(info["vehicles"]) == 2
+    # Nothing for it to hit. Materialising a second car on top of it would be
+    # a teleport in front of the audience; a car leaving the carriageway is an
+    # accident that needs no second party.
+    assert info["kind"] == "solo"
+    assert len(info["vehicles"]) == 1
+    assert len(engine.vehicles) == 1
+
+
+def test_every_kind_of_collision_uses_vehicles_that_were_already_there():
+    # The regression this pins: no call to trigger_collision may add a vehicle
+    # to the city or move one that is already in it.
+    for vehicles in (1, 4, 16):
+        engine = run(scene(vehicles=vehicles), 12)
+        before = {v.id: v.position_xy() for v in engine.vehicles.values()}
+        info = engine.trigger_collision()
+        assert info is not None
+        assert set(engine.vehicles) == set(before), "a vehicle appeared or vanished"
+        for vid, where in before.items():
+            assert engine.vehicles[vid].position_xy() == where, f"{vid} was moved"
+        assert info["kind"] in {"shunt", "junction", "solo"}
 
 
 def test_an_ambulance_is_dispatched_towards_the_incident_not_at_random():

@@ -165,6 +165,45 @@ check("architecture switch applies", (await text()).includes("Exp 1"));
 await page.selectOption("#arch", "exp3_full");
 await page.waitForTimeout(600);
 
+// ------------------------------------------------------ explainability
+console.log("\nexplainability");
+// Roads are named, not printed as matrix indices — the single biggest reason
+// a viewer could not follow the event log.
+check(
+  "the event log names streets",
+  /(\d+(?:st|nd|rd|th) Cross|Avenue)/.test(await text()),
+  "no street name anywhere on the page",
+);
+check(
+  "raw segment ids are gone from the log",
+  !/\b\d-\d_\d-\d\b/.test(await page.locator(".event-log").innerText()),
+);
+check("the why panel is present", (await page.locator(".panel.explain").count()) > 0);
+
+await page.getByRole("button", { name: /Inject road hazard/ }).click();
+await page.waitForTimeout(1500);
+check("a hazard raises a labelled incident on the map", (await page.locator(".incident-badge").count()) > 0);
+
+await page.locator(".incident-badge").first().click();
+await page.waitForTimeout(500);
+check("clicking an incident opens its dossier", (await page.locator(".verdict").count()) > 0);
+check("the dossier puts belief against ground truth", (await page.locator(".truth-table").count()) > 0);
+
+// A decision must be able to justify itself, not merely announce itself.
+await page.getByRole("button", { name: /Inject attacker/ }).click();
+await page.waitForTimeout(3000);
+await page.locator(".city-map").click({ position: { x: 4, y: 4 } });
+await page.waitForTimeout(400);
+const decisionCount = await page.locator(".decision").count();
+check("decisions are recorded", decisionCount > 0, `${decisionCount} on screen`);
+if (decisionCount > 0) {
+  await page.locator(".decision-head").first().click();
+  await page.waitForTimeout(300);
+  const body = await page.locator(".decision-body").first().innerText();
+  check("a decision carries the evidence it had", /What it had to go on/i.test(body));
+  check("a decision quotes the rule it applied", /The rule it applied/i.test(body));
+}
+
 // -------------------------------------------------------------- federated
 console.log("\nfederated learning");
 await go("/federated", ".statbar");

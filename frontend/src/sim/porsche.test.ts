@@ -243,20 +243,26 @@ describe("collisions", () => {
     expect(e.metrics.summary().communication.frames_by_designator.DENM ?? 0).toBeGreaterThan(0);
   });
 
-  it("clears the wreck eventually", () => {
+  it("recovers the wreck rather than letting it drive away", () => {
     const e = run(city(), 10);
-    e.triggerCollision();
+    const info = e.triggerCollision()!;
     run(e, 40);
+    // Gone from the city entirely. Previously it sat still for twenty-two
+    // ticks and then resumed its journey, which is not something a wrecked
+    // car does.
+    for (const id of info.vehicles) expect(e.vehicles.get(id)).toBeUndefined();
     expect([...e.vehicles.values()].some((v) => v.crashed)).toBe(false);
   });
 
-  it("says when it had to stage the second vehicle", () => {
+  it("calls it a single-vehicle accident rather than conjuring a second car", () => {
     const e = run(city(4, 1), 6);
     const info = e.triggerCollision()!;
-    // One vehicle in the city, so the second had to be brought in — and the
-    // result says so rather than pretending traffic did it.
-    expect(info.staged).toBe(true);
-    expect(info.vehicles).toHaveLength(2);
+    // One vehicle in the city, so there is nothing for it to hit. Materialising
+    // a second car on top of it would be a teleport in front of the audience;
+    // a car leaving the carriageway is an accident that needs no second party.
+    expect(info.solo).toBe(true);
+    expect(info.vehicles).toHaveLength(1);
+    expect(e.vehicles.size).toBe(1);
   });
 
   it("dispatches an ambulance towards the incident, not at random", () => {

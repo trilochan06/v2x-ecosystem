@@ -70,6 +70,125 @@ export class Pedestrian {
 
 export const nodeId = (x: number, y: number) => `${x}-${y}`;
 
+// ------------------------------------------------------------ land use
+/**
+ * What a place is for.
+ *
+ * Traffic used to be a random walk: on arrival every vehicle drew a uniformly
+ * random node and set off again. That produces motion but not traffic — no
+ * rush toward anywhere, so congestion could only ever come from the hazard
+ * injector, and the congestion forecaster was predicting noise.
+ *
+ * Giving the grid land use costs one lookup table and buys three things: trips
+ * that have a reason, jams that form where people are actually going, and an
+ * incident report that can say which district it happened in.
+ */
+export type LandUse = "centre" | "civic" | "industrial" | "residential";
+
+/** How much more likely a place is to be someone's destination. */
+export const ATTRACTION: Record<LandUse, number> = {
+  centre: 3.2,
+  industrial: 1.8,
+  civic: 1.5,
+  residential: 1,
+};
+
+export const LAND_USE_LABEL: Record<LandUse, string> = {
+  centre: "City Centre",
+  civic: "Civic quarter",
+  industrial: "Industrial estate",
+  residential: "Residential",
+};
+
+/** Why someone is driving — derived from where they are going, and used by
+ *  the explanation panel to say something more useful than "destination 4-2". */
+export const TRIP_PURPOSE: Record<LandUse, string> = {
+  centre: "commuting into the centre",
+  civic: "heading for the hospital quarter",
+  industrial: "on a delivery run to the estate",
+  residential: "driving home",
+};
+
+/**
+ * Where the civic quarter sits, for a grid of this size.
+ *
+ * Fixed rather than random so that both engines, every seed and every replay
+ * put the hospital in the same place — an audience that has seen the map once
+ * should not have to relearn it.
+ */
+export function civicNodes(size: number): string[] {
+  return [nodeId(0, size - 1), nodeId(size - 1, 0)];
+}
+
+export function landUseOf(node: string, size: number): LandUse {
+  const [x, y] = node.split("-").map(Number);
+  const mid = (size - 1) / 2;
+  if (Math.max(Math.abs(x - mid), Math.abs(y - mid)) <= Math.max(0.5, (size - 1) * 0.2)) return "centre";
+  if (civicNodes(size).includes(node)) return "civic";
+  const estate = Math.ceil(size / 3);
+  if (x >= size - estate && y >= size - estate) return "industrial";
+  return "residential";
+}
+
+// ------------------------------------------------------- place names
+/**
+ * Street names, because `5-3_5-4` is not something anyone can hold in their
+ * head — and an incident log that reads like a matrix index is the single
+ * biggest reason a viewer cannot follow what the system is doing.
+ *
+ * North–south roads are avenues and carry a name; east–west roads are numbered
+ * crosses. Beyond the name list the scheme degrades to a number rather than
+ * repeating, so any grid size stays unambiguous.
+ */
+const AVENUE_NAMES = [
+  "Harbour",
+  "Mill",
+  "Cathedral",
+  "University",
+  "Park",
+  "Station",
+  "Foundry",
+  "Orchard",
+];
+
+export function avenueName(x: number): string {
+  return `${AVENUE_NAMES[x] ?? `Avenue ${x + 1}`} Avenue`;
+}
+
+export function crossName(y: number): string {
+  const n = y + 1;
+  const suffix =
+    n % 100 >= 11 && n % 100 <= 13 ? "th" : ["th", "st", "nd", "rd"][Math.min(n % 10, 4)] ?? "th";
+  return `${n}${suffix} Cross`;
+}
+
+/** "Cathedral Ave × 3rd Cross" — how a junction is referred to out loud. */
+export function junctionName(node: string): string {
+  const [x, y] = node.split("-").map(Number);
+  return `${avenueName(x).replace(" Avenue", " Ave")} × ${crossName(y)}`;
+}
+
+/** "3rd Cross, Cathedral–University block" — one segment, in words. */
+export function roadName(segmentId: string): string {
+  const [a, b] = segmentId.split("_");
+  const [ax, ay] = a.split("-").map(Number);
+  const [bx, by] = b.split("-").map(Number);
+  if (ay === by) return `${crossName(ay)}, ${AVENUE_NAMES[ax] ?? `Ave ${ax + 1}`}–${AVENUE_NAMES[bx] ?? `Ave ${bx + 1}`} block`;
+  return `${avenueName(ax)}, ${crossName(Math.min(ay, by))}–${crossName(Math.max(ay, by))}`;
+}
+
+/** Draw from `items` with probability proportional to `weight`. */
+export function weightedPick<T>(items: T[], weight: (item: T) => number, rng: Rng): T {
+  const total = items.reduce((s, item) => s + Math.max(0, weight(item)), 0);
+  if (total <= 0) return rng.pick(items);
+  let target = rng.next() * total;
+  for (const item of items) {
+    target -= Math.max(0, weight(item));
+    if (target <= 0) return item;
+  }
+  return items[items.length - 1];
+}
+
 export class Segment {
   occupancy = 0;
   hazardActive = false;
@@ -151,6 +270,15 @@ export class CityGrid {
 
   segmentBetween(a: string, b: string): Segment {
     return this.segments.get(`${a}_${b}`) ?? this.segments.get(`${b}_${a}`)!;
+  }
+
+  landUse(node: string): LandUse {
+    return landUseOf(node, this.size);
+  }
+
+  /** How strongly this junction pulls trips towards it. */
+  attraction(node: string): number {
+    return ATTRACTION[this.landUse(node)];
   }
 
   neighbors(n: string) {

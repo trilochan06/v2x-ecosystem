@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import type { SimulationState, VehicleState } from "../types";
+import { junctionName, landUseOf, roadName } from "../sim/core";
+import type { IncidentDossier, SimulationState, VehicleState } from "../types";
 
 const CELL = 130;
 const PAD = 60;
@@ -44,13 +45,43 @@ const VEHICLE_COLOR: Record<string, string> = {
   malicious: "#c084fc",
 };
 
+/**
+ * What each district is coloured.
+ *
+ * The city is not uniform any more — trips are drawn towards the centre and
+ * the estate — so the map has to show that, or the jam that forms in the
+ * middle looks like a coincidence instead of the consequence it is.
+ */
+const DISTRICT_TINT: Record<string, string> = {
+  centre: "#2a3350",
+  industrial: "#2e2a1f",
+  civic: "#1f3330",
+  residential: "#1c2436",
+};
+
+/** How an incident marker reads: is the belief right, wrong, or missing? */
+const VERDICT_STYLE: Record<string, { fill: string; stroke: string; label: string }> = {
+  "confirmed-real": { fill: "#3f2226", stroke: "#f87171", label: "CONFIRMED" },
+  "confirmed-false": { fill: "#3a2748", stroke: "#c084fc", label: "FALSE" },
+  unreported: { fill: "#3b3220", stroke: "#eab308", label: "UNREPORTED" },
+  clear: { fill: "#1e293b", stroke: "#64748b", label: "CLEAR" },
+};
+
 interface Props {
   state: SimulationState;
   selectedSegment: string | null;
   onSelectSegment: (id: string) => void;
+  selectedVehicle?: string | null;
+  onSelectVehicle?: (id: string | null) => void;
 }
 
-export function CityMap({ state, selectedSegment, onSelectSegment }: Props) {
+export function CityMap({
+  state,
+  selectedSegment,
+  onSelectSegment,
+  selectedVehicle,
+  onSelectVehicle,
+}: Props) {
   const size = state.grid_size;
   const width = PAD * 2 + (size - 1) * CELL;
   const height = MARGIN_TOP + PAD + (size - 1) * CELL;
@@ -99,7 +130,14 @@ export function CityMap({ state, selectedSegment, onSelectSegment }: Props) {
           const [x1, y1] = nodeXY(`${bx + 1}-${by + 1}`);
           const inset = ROAD_WIDTH / 2 + 8;
           const isPark = Math.floor(hash(bx, by) * 6) === 0;
-          const color = isPark ? "#16321f" : BLOCK_PALETTE[Math.floor(hash(bx + 1, by + 2) * BLOCK_PALETTE.length)];
+          // Tinted by what the block is for, so the centre reads as the
+          // centre. The random palette still varies it within a district.
+          const use = landUseOf(`${bx}-${by}`, size);
+          const color = isPark
+            ? "#16321f"
+            : use === "residential"
+              ? BLOCK_PALETTE[Math.floor(hash(bx + 1, by + 2) * BLOCK_PALETTE.length)]
+              : DISTRICT_TINT[use];
           const bw = x1 - x0 - inset * 2;
           const bh = y1 - y0 - inset * 2;
           return (
@@ -165,10 +203,30 @@ export function CityMap({ state, selectedSegment, onSelectSegment }: Props) {
             {isCorridor && (
               <line x1={ax} y1={ay} x2={bx} y2={by} stroke="#38bdf8" strokeWidth={3} strokeDasharray="2 10" className="corridor-pulse" />
             )}
-            <line x1={ax} y1={ay} x2={bx} y2={by} stroke="transparent" strokeWidth={26} />
+            <line x1={ax} y1={ay} x2={bx} y2={by} stroke="transparent" strokeWidth={26}>
+              <title>
+                {roadName(seg.id)} · {Math.round(seg.occupancy * 100)}% full
+                {seg.hazard_active ? ` · ${seg.hazard_type.replace(/_/g, " ")}` : ""}
+                {seg.confirmed_incident ? " · the network has confirmed an incident here" : ""}
+              </title>
+            </line>
           </g>
         );
       })}
+
+      {/* Incidents, labelled where they are.
+          A red road tells you something is wrong; it does not tell you what,
+          who said so, or whether the network is right. The badge does, and it
+          is the only place a fabricated report is visible as a fabrication
+          rather than as an ordinary incident. */}
+      {(state.dossiers ?? []).map((d) => (
+        <IncidentBadge
+          key={d.segment_id}
+          dossier={d}
+          selected={d.segment_id === selectedSegment}
+          onSelect={() => onSelectSegment(d.segment_id)}
+        />
+      ))}
 
       {/* fog computing layer */}
       {state.fog_nodes.map((fog) => {
@@ -252,7 +310,13 @@ export function CityMap({ state, selectedSegment, onSelectSegment }: Props) {
 
       {/* vehicles */}
       {state.vehicles.map((v) => (
-        <VehicleIcon key={v.id} v={v} justRerouted={justRerouted.has(v.id)} />
+        <VehicleIcon
+          key={v.id}
+          v={v}
+          justRerouted={justRerouted.has(v.id)}
+          selected={v.id === selectedVehicle}
+          onSelect={onSelectVehicle}
+        />
       ))}
 
       {/* Pedestrians, drawn over the traffic. The dashed halo means cars that
@@ -272,7 +336,7 @@ export function CityMap({ state, selectedSegment, onSelectSegment }: Props) {
             )}
             <circle r={3} fill="#fefce8" stroke="#0b1120" strokeWidth={0.8} />
             <title>
-              Pedestrian on {ped.segment_id.replace("_", " → ")} · {ped.seen_by.length} can see them,{" "}
+              Pedestrian on {roadName(ped.segment_id)} · {ped.seen_by.length} can see them,{" "}
               {ped.known_by.length} told by radio
             </title>
           </g>
@@ -282,7 +346,78 @@ export function CityMap({ state, selectedSegment, onSelectSegment }: Props) {
   );
 }
 
-function VehicleIcon({ v, justRerouted }: { v: VehicleState; justRerouted: boolean }) {
+/**
+ * An incident, named and adjudicated, sitting on the road it is about.
+ *
+ * `FALSE` is the one worth pointing at: the network has confirmed an incident
+ * on a road where the simulator knows there is nothing. That is what a
+ * successful injection attack looks like from the inside, and it is the same
+ * event the precision figure is counting.
+ */
+function IncidentBadge({
+  dossier,
+  selected,
+  onSelect,
+}: {
+  dossier: IncidentDossier;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const [a, b] = dossier.segment_id.split("_");
+  const [ax, ay] = nodeXY(a);
+  const [bx, by] = nodeXY(b);
+  const x = (ax + bx) / 2;
+  const y = (ay + by) / 2;
+  const style = VERDICT_STYLE[dossier.verdict] ?? VERDICT_STYLE.clear;
+  const what = dossier.ground_truth
+    ? (dossier.ground_truth_type || "hazard").replace(/_/g, " ")
+    : "nothing there";
+
+  return (
+    <g
+      transform={`translate(${x} ${y})`}
+      className="incident-badge"
+      onClick={onSelect}
+      style={{ cursor: "pointer" }}
+    >
+      <rect
+        x={-46}
+        y={-30}
+        width={92}
+        height={25}
+        rx={5}
+        fill={style.fill}
+        stroke={style.stroke}
+        strokeWidth={selected ? 2 : 1.2}
+        opacity={0.96}
+      />
+      <text x={0} y={-20} textAnchor="middle" fontSize={7.5} fontWeight={700} fill={style.stroke}>
+        {style.label}
+        {dossier.distinct_witnesses > 0 ? ` · ${dossier.distinct_witnesses} witness` : ""}
+        {dossier.distinct_witnesses > 1 ? "es" : ""}
+      </text>
+      <text x={0} y={-11} textAnchor="middle" fontSize={7} fill="#cbd5e1">
+        {what.length > 18 ? `${what.slice(0, 17)}…` : what}
+      </text>
+      <path d={`M 0 -5 L -4 0 L 4 0 Z`} fill={style.stroke} />
+      <title>
+        {dossier.road} · {dossier.verdict_text}
+      </title>
+    </g>
+  );
+}
+
+function VehicleIcon({
+  v,
+  justRerouted,
+  selected,
+  onSelect,
+}: {
+  v: VehicleState;
+  justRerouted: boolean;
+  selected?: boolean;
+  onSelect?: (id: string | null) => void;
+}) {
   const px = PAD + v.x * CELL;
   const py = MARGIN_TOP + v.y * CELL;
   const heading = headingDegrees(v.node, v.next_node);
@@ -295,25 +430,50 @@ function VehicleIcon({ v, justRerouted }: { v: VehicleState; justRerouted: boole
       style={{
         transform: `translate(${px}px, ${py}px)`,
         transition: "transform 0.75s linear",
+        cursor: onSelect ? "pointer" : undefined,
       }}
+      onClick={onSelect ? () => onSelect(selected ? null : v.id) : undefined}
     >
+      {/* A generous hit area: the icon is 14px wide on a 130px cell, so
+          without this a click mostly lands on the road underneath. */}
+      <circle r={13} fill="transparent" />
+      {selected && <circle r={15} fill="none" stroke="#e2e8f0" strokeWidth={1.8} opacity={0.9} />}
       <g style={{ transform: `rotate(${heading}deg)`, transition: "transform 0.75s linear" }}>
         {v.yielding && <circle r={11} fill="#38bdf8" opacity={0.25} />}
         {isFlagged && <circle r={11} fill="#facc15" opacity={0.3} className="incident-pulse" />}
         {justRerouted && <circle r={13} fill="none" stroke="#a3e635" strokeWidth={2} className="reroute-ping" />}
-        <rect x={-7} y={-4} width={14} height={8} rx={3} fill={isAmbulance ? "#fff1f2" : color} stroke="#0b1120" strokeWidth={0.8} />
+        {v.crashed && <circle r={12} fill="#ef4444" opacity={0.28} className="incident-pulse" />}
+        <rect
+          x={-7}
+          y={-4}
+          width={14}
+          height={8}
+          rx={3}
+          fill={v.crashed ? "#7f6060" : isAmbulance ? "#fff1f2" : color}
+          stroke="#0b1120"
+          strokeWidth={0.8}
+          opacity={v.parked ? 0.55 : 1}
+          transform={v.crashed ? "rotate(28)" : undefined}
+        />
         {isAmbulance && (
           <>
             <rect x={-2.5} y={-3.5} width={1.5} height={7} fill="#ef4444" />
             <rect x={-4.25} y={-1.75} width={5} height={1.5} fill="#ef4444" />
           </>
         )}
-        {!isAmbulance && <rect x={-2} y={-3} width={5} height={6} rx={1} fill="#0b1120" opacity={0.35} />}
+        {!isAmbulance && !v.crashed && <rect x={-2} y={-3} width={5} height={6} rx={1} fill="#0b1120" opacity={0.35} />}
         <circle cx={6} cy={-2.5} r={1.1} fill="#fef3c7" />
         <circle cx={6} cy={2.5} r={1.1} fill="#fef3c7" />
       </g>
       <title>
-        {v.id} ({v.kind}) trust={v.trust_hint.toFixed(2)} reroutes={v.reroute_count}
+        {v.id} · {v.kind}
+        {v.crashed
+          ? " · wrecked, waiting for recovery"
+          : v.parked
+            ? " · parked"
+            : ` · ${v.trip_purpose || "on a trip"}, for ${junctionName(v.destination)}`}
+        {" · "}trust {v.trust_hint.toFixed(2)} · {v.reroute_count} diversion
+        {v.reroute_count === 1 ? "" : "s"}
       </title>
     </g>
   );

@@ -8,10 +8,15 @@ import { FogPanel } from "../components/FogPanel";
 import { Toaster } from "../components/Toaster";
 import { useToaster } from "../components/useToaster";
 import type { ArchitectureConfigState, SimulationState } from "../types";
+import { roadName } from "../sim/core";
 
 export function ControlCenter() {
   const { state, connected } = useSimulation();
   const [selectedSegment, setSelectedSegment] = useState<string | null>(null);
+  /** Clicking a car asks a different question from clicking a road — what
+   *  does *it* know and why did it last change its mind — so the two
+   *  selections are separate and picking one clears the other. */
+  const [selectedVehicle, setSelectedVehicle] = useState<string | null>(null);
   /** Hide the side column and give the map the whole page. The map is the
    *  thing people came to look at; at 1fr next to a 360px column on a laptop
    *  it is too small to read. */
@@ -21,7 +26,7 @@ export function ControlCenter() {
   const { toasts, push, dismiss } = useToaster();
 
   // Name what happened and put the map on it, so a click is visibly a click.
-  const readable = (segmentId: string) => segmentId.replace("_", " \u2192 ");
+  const readable = roadName;
 
   const onInjectHazard = () => {
     const segmentId = commands.injectHazard();
@@ -165,7 +170,19 @@ export function ControlCenter() {
               {wideMap ? "⇤ Show panels" : "⇥ Widen map"}
             </button>
           </div>
-          <CityMap state={state} selectedSegment={selectedSegment} onSelectSegment={setSelectedSegment} />
+          <CityMap
+            state={state}
+            selectedSegment={selectedSegment}
+            onSelectSegment={(id) => {
+              setSelectedSegment(id);
+              setSelectedVehicle(null);
+            }}
+            selectedVehicle={selectedVehicle}
+            onSelectVehicle={(id) => {
+              setSelectedVehicle(id);
+              if (id) setSelectedSegment(null);
+            }}
+          />
           <div className="legend">
             <span><i className="dot" style={{ background: "#7dd3fc" }} /> vehicle</span>
             <span><i className="dot" style={{ background: "#f87171" }} /> ambulance</span>
@@ -174,7 +191,13 @@ export function ControlCenter() {
             <span><i className="line" style={{ background: "#e66767" }} /> congested</span>
             <span><i className="line dashed-red" /> physical hazard</span>
             <span><i className="line dashed-amber" /> network-confirmed incident</span>
+            <span><i className="dot" style={{ background: "#2a3350" }} /> city centre</span>
+            <span><i className="dot" style={{ background: "#2e2a1f" }} /> industrial estate</span>
+            <span><i className="dot" style={{ background: "#1f3330" }} /> civic quarter</span>
           </div>
+          <p className="muted small map-hint">
+            Click any road or any car to be told why it is doing what it is doing.
+          </p>
         </section>
 
         <aside className="side">
@@ -213,7 +236,11 @@ export function ControlCenter() {
             </div>
           </div>
 
-          <ExplainPanel state={state} selectedSegment={selectedSegment} />
+          <ExplainPanel
+            state={state}
+            selectedSegment={selectedSegment}
+            selectedVehicle={selectedVehicle}
+          />
           <FogPanel state={state} />
 
           <div className="panel">

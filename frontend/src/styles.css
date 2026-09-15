@@ -296,6 +296,49 @@ button.danger { background: #2c1414; border-color: #5e2525; color: #f3a8a8; }
 .explain-row { display: flex; justify-content: space-between; gap: 12px; font-size: 0.85rem; padding: 5px 0; border-bottom: 1px solid #1a2633; }
 .explanation-text { margin: 10px 0 4px; font-size: 0.88rem; }
 
+/* --------------------------------------------------- explainability
+   The panel that answers "why". Three shapes share it: a road's dossier,
+   a vehicle's reasoning, and the running decision feed. */
+.explain-body { display: flex; flex-direction: column; gap: 10px; }
+.explain-head { display: flex; flex-direction: column; gap: 2px; }
+.explain-head strong { font-size: 0.98rem; }
+.map-hint { margin: 6px 0 0; }
+
+/* The verdict: does the network's belief match the world? */
+.verdict { border-radius: 8px; padding: 9px 11px; border: 1px solid; font-size: 0.83rem; }
+.verdict p { margin: 4px 0 0; }
+.verdict-label { font-size: 0.7rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+.verdict-true { background: #2a1a1c; border-color: #b4585b; color: #f3c3c3; }
+.verdict-false { background: #281c33; border-color: #a06fd0; color: #e2cdf5; }
+.verdict-missed { background: #2a2515; border-color: #a8873a; color: #f0dfae; }
+.verdict-clear { background: var(--surface-2); border-color: var(--line); color: var(--muted); }
+
+.truth-table { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.truth-table > div { background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; display: flex; flex-direction: column; gap: 2px; }
+.truth-table strong { font-size: 0.85rem; }
+
+.witnesses { display: flex; flex-direction: column; gap: 4px; }
+.witness { display: flex; align-items: baseline; gap: 8px; font-size: 0.78rem; flex-wrap: wrap; }
+.witness code { font-size: 0.74rem; }
+.trust-ok { color: #6fce9f; }
+.trust-bad { color: #e88b8b; }
+
+.forecast h3, .explain-body h3 { font-size: 0.8rem; margin: 6px 0 2px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+
+/* One decision, collapsed to its headline until asked. */
+.decision { border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); overflow: hidden; }
+.decision-head { display: flex; align-items: baseline; gap: 8px; width: 100%; text-align: left; background: none; border: none; padding: 8px 10px; font-size: 0.82rem; color: inherit; cursor: pointer; }
+.decision-head:hover { background: #18202c; }
+.decision-icon { flex: none; }
+.decision-headline { flex: 1; min-width: 0; }
+.decision-tick { flex: none; font-size: 0.7rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.decision-body { padding: 0 10px 10px; font-size: 0.79rem; display: flex; flex-direction: column; gap: 3px; }
+.decision-body ul { margin: 0; padding-left: 16px; }
+.decision-body p { margin: 0; }
+.decision-label { font-size: 0.67rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); margin-top: 5px; }
+
+.incident-badge text { pointer-events: none; }
+
 .fog-cluster-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
 .fog-cluster { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--surface-2); }
 .fog-cluster.alert { border-color: #8a4a12; background: #1e1409; }

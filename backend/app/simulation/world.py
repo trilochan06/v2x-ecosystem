@@ -25,6 +25,114 @@ def node_id(x: int, y: int) -> str:
     return f"{x}-{y}"
 
 
+# --------------------------------------------------------------- land use
+# What a place is for.
+#
+# Traffic used to be a random walk: on arrival every vehicle drew a uniformly
+# random node and set off again. That produces motion but not traffic -- no
+# rush toward anywhere, so congestion could only ever come from the hazard
+# injector, and the congestion forecaster was predicting noise.
+#
+# Giving the grid land use costs one lookup table and buys three things: trips
+# that have a reason, jams that form where people are actually going, and an
+# incident report that can say which district it happened in.
+LAND_USES = ("centre", "civic", "industrial", "residential")
+
+#: How much more likely a place is to be someone's destination.
+ATTRACTION = {"centre": 3.2, "industrial": 1.8, "civic": 1.5, "residential": 1.0}
+
+LAND_USE_LABEL = {
+    "centre": "City Centre",
+    "civic": "Civic quarter",
+    "industrial": "Industrial estate",
+    "residential": "Residential",
+}
+
+#: Why someone is driving -- derived from where they are going, and used by the
+#: explanation panel to say something more useful than "destination 4-2".
+TRIP_PURPOSE = {
+    "centre": "commuting into the centre",
+    "civic": "heading for the hospital quarter",
+    "industrial": "on a delivery run to the estate",
+    "residential": "driving home",
+}
+
+
+def civic_nodes(size: int) -> list[str]:
+    """Where the civic quarter sits, for a grid of this size.
+
+    Fixed rather than random so that both engines, every seed and every replay
+    put the hospital in the same place -- an audience that has seen the map
+    once should not have to relearn it.
+    """
+    return [node_id(0, size - 1), node_id(size - 1, 0)]
+
+
+def land_use_of(node: str, size: int) -> str:
+    x, y = (int(v) for v in node.split("-"))
+    mid = (size - 1) / 2
+    if max(abs(x - mid), abs(y - mid)) <= max(0.5, (size - 1) * 0.2):
+        return "centre"
+    if node in civic_nodes(size):
+        return "civic"
+    estate = math.ceil(size / 3)
+    if x >= size - estate and y >= size - estate:
+        return "industrial"
+    return "residential"
+
+
+# ------------------------------------------------------------ place names
+# Street names, because `5-3_5-4` is not something anyone can hold in their
+# head -- and an incident log that reads like a matrix index is the single
+# biggest reason a viewer cannot follow what the system is doing.
+#
+# North-south roads are avenues and carry a name; east-west roads are numbered
+# crosses. Beyond the name list the scheme degrades to a number rather than
+# repeating, so any grid size stays unambiguous.
+AVENUE_NAMES = [
+    "Harbour",
+    "Mill",
+    "Cathedral",
+    "University",
+    "Park",
+    "Station",
+    "Foundry",
+    "Orchard",
+]
+
+
+def _avenue(x: int) -> str:
+    return AVENUE_NAMES[x] if x < len(AVENUE_NAMES) else f"Ave {x + 1}"
+
+
+def avenue_name(x: int) -> str:
+    return f"{AVENUE_NAMES[x]} Avenue" if x < len(AVENUE_NAMES) else f"Avenue {x + 1}"
+
+
+def cross_name(y: int) -> str:
+    n = y + 1
+    # 11th, 12th and 13th are the exceptions the modulo rule gets wrong.
+    suffix = "th" if 11 <= n % 100 <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix} Cross"
+
+
+def junction_name(node: str) -> str:
+    """Cathedral Ave x 3rd Cross -- how a junction is referred to out loud."""
+    x, y = (int(v) for v in node.split("-"))
+    return f"{avenue_name(x).replace(' Avenue', ' Ave')} × {cross_name(y)}"
+
+
+def road_name(segment_id: str) -> str:
+    """3rd Cross, Cathedral-University block -- one segment, in words."""
+    a, b = segment_id.split("_")
+    ax, ay = (int(v) for v in a.split("-"))
+    bx, by = (int(v) for v in b.split("-"))
+    if ay == by:
+        return f"{cross_name(ay)}, {_avenue(ax)}–{_avenue(bx)} block"
+    lo, hi = min(ay, by), max(ay, by)
+    return f"{avenue_name(ax)}, {cross_name(lo)}–{cross_name(hi)}"
+
+
 @dataclass
 class Pedestrian:
     """A vulnerable road user stepping onto a crossing.
@@ -164,6 +272,13 @@ class CityGrid:
         if sid in self.segments:
             return self.segments[sid]
         return self.segments[f"{b}_{a}"]
+
+    def land_use(self, node: str) -> str:
+        return land_use_of(node, self.size)
+
+    def attraction(self, node: str) -> float:
+        """How strongly this junction pulls trips towards it."""
+        return ATTRACTION[self.land_use(node)]
 
     def neighbors(self, node: str) -> list[str]:
         return self.adjacency[node]

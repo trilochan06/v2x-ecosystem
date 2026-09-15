@@ -20,7 +20,17 @@ import type { SimulationState } from "../types";
  *  ambulance usually meets a signalised junction on its way. */
 export const GUIDED_GRID_SIZE = 4;
 export const GUIDED_RSU_COUNT = 9;
-export const GUIDED_VEHICLE_COUNT = 7;
+/**
+ * Enough traffic that corroboration has something to work with.
+ *
+ * This was seven, which looked tidier and made the headline crash story fail
+ * about one run in six: a report needs a second, independent witness before
+ * the network will believe it, and on an empty grid there is nobody to be
+ * that witness. Twelve is still sparse enough to follow every car
+ * individually, and takes every story to 24 of 24 seeds — see
+ * `scenarios.test.ts`, which measures it rather than asserting it.
+ */
+export const GUIDED_VEHICLE_COUNT = 12;
 
 /** Deliberately unhurried. A demo you cannot narrate over is a demo nobody
  *  understands. */

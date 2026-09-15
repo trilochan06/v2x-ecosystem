@@ -1,4 +1,5 @@
 import type { SimulationState, Transmission } from "../types";
+import { roadName } from "../sim/core";
 
 /**
  * What just happened, in words a person can read.
@@ -154,5 +155,5 @@ function phrase(
 
 function road(segmentId?: string): string {
   if (!segmentId) return "its road";
-  return segmentId.replace("_", "→");
+  return roadName(segmentId);
 }

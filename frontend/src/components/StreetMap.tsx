@@ -1,4 +1,5 @@
 import type { SimulationState, Transmission } from "../types";
+import { roadName } from "../sim/core";
 
 /**
  * A street-level view of a small neighbourhood.
@@ -378,7 +379,7 @@ function crossingXY(
 }
 
 function road(segmentId: string): string {
-  return segmentId.replace("_", " → ");
+  return roadName(segmentId);
 }
 
 /** "car-12" → "C12", "ambulance-3" → "A3". Short enough to sit over a car. */

@@ -10,7 +10,7 @@ def test_vehicle_reroutes_around_peer_reported_congestion():
     blocked_segment = grid.segment_between("1-0", "2-0")
     v.receive_occupancy_ping(blocked_segment.id, occupancy=0.95, tick=5)
 
-    rerouted = v._maybe_reroute(tick=6)
+    rerouted = v.reroute(tick=6)
 
     assert rerouted is True
     assert blocked_segment.id not in {
@@ -26,7 +26,7 @@ def test_vehicle_does_not_reroute_on_stale_peer_info():
     blocked_segment = grid.segment_between("1-0", "2-0")
     v.receive_occupancy_ping(blocked_segment.id, occupancy=0.95, tick=0)
 
-    rerouted = v._maybe_reroute(tick=100)  # way past PEER_INFO_STALE_TICKS
+    rerouted = v.reroute(tick=100)  # way past PEER_INFO_STALE_TICKS
 
     assert rerouted is False
     assert v.route == ["0-0", "1-0", "2-0", "3-0"]
@@ -40,7 +40,7 @@ def test_ambulance_never_reroutes_off_priority_path():
     blocked_segment = grid.segment_between("1-0", "2-0")
     v.receive_occupancy_ping(blocked_segment.id, occupancy=0.99, tick=5)
 
-    rerouted = v._maybe_reroute(tick=6)
+    rerouted = v.reroute(tick=6)
 
     assert rerouted is False
     assert v.route == ["0-0", "1-0", "2-0", "3-0"]
@@ -53,11 +53,11 @@ def test_reroute_respects_cooldown():
 
     seg1 = grid.segment_between("1-0", "2-0")
     v.receive_occupancy_ping(seg1.id, occupancy=0.95, tick=5)
-    assert v._maybe_reroute(tick=6) is True
+    assert v.reroute(tick=6) is True
 
     cooldown_snapshot = v._reroute_cooldown_until
     seg_after = grid.segment_between(v.route[1], v.route[2])
     v.receive_occupancy_ping(seg_after.id, occupancy=0.95, tick=7)
 
     # still inside the cooldown window -- should not thrash on every tick
-    assert v._maybe_reroute(tick=cooldown_snapshot - 1) is False
+    assert v.reroute(tick=cooldown_snapshot - 1) is False

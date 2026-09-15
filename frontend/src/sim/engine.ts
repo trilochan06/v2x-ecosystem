@@ -23,10 +23,12 @@ import {
   SIGNAL_REQUEST_STATUS,
   Rng,
   backhaulBytes,
+  junctionName,
   makeMessage,
   makeRng,
   messageBytes,
   nodeId,
+  roadName,
 } from "./core";
 import {
   CorroborationEngine,
@@ -37,6 +39,8 @@ import {
   ReplayGuard,
   TrustRegistry,
 } from "./network";
+import { DecisionLedger, incidentDossier } from "./explain";
+import type { Decision, DecisionKind } from "./explain";
 import type { ArchitectureConfigState, SimulationState, Transmission } from "../types";
 
 // ------------------------------------------------------------ metrics
@@ -279,7 +283,14 @@ export const CONFIGS: Record<string, ArchitectureConfigState> = {
 };
 
 // -------------------------------------------------------------- engine
+/** How a collision came about. Every one of them involves vehicles that were
+ *  already where they are — none of them conjures a car into place. */
+export type CollisionKind = "shunt" | "junction" | "solo";
+
 const MAX_EVENTS = 150;
+/** How many raw hazard claims to keep for the dossiers. A few hundred covers
+ *  far more than the corroboration window, without growing without bound. */
+const REPORT_LOG_LIMIT = 400;
 const FOG_INTERVAL_TICKS = 20;
 const FL_ROUND_INTERVAL_TICKS = 15;
 const TWIN_SYNC_INTERVAL_TICKS = 2;
@@ -312,7 +323,7 @@ export class SimulationEngine {
    *  pedestrian it could not itself see. */
   perceptionStats = { shared: 0, warnedBlind: 0, brakeWarnings: 0 };
   /** Recent collisions, newest last, so the UI can narrate them. */
-  collisions: { tick: number; segment_id: string; vehicles: string[] }[] = [];
+  collisions: { tick: number; segment_id: string; vehicles: string[]; kind: CollisionKind }[] = [];
   metrics = new MetricsCollector();
   federation = new FederatedCoordinator();
   trust = new TrustRegistry();
@@ -335,6 +346,22 @@ export class SimulationEngine {
   rsuNetwork = new RSUNetwork();
   predictor = new CongestionPredictor();
   eventLog: { tick: number; type: string; message: string }[] = [];
+  /** Why the system did what it did — see `explain.ts`. */
+  ledger = new DecisionLedger();
+  /**
+   * Who reported what, and when.
+   *
+   * Only what actually went on the air: a report appears here because a frame
+   * carrying it was delivered, which is the same standard every other belief
+   * in this engine is held to. Bounded, and windowed by the dossier.
+   */
+  private reportLog: {
+    segmentId: string;
+    senderId: string;
+    pseudonym: string;
+    tick: number;
+    confidence: number;
+  }[] = [];
 
   private rng: Rng;
   private bus: EtherBus;
@@ -404,8 +431,8 @@ export class SimulationEngine {
     return out.slice(0, count);
   }
 
-  spawnVehicle(kind: VehicleKind = "car"): Vehicle {
-    const node = this.rng.pick([...this.grid.nodes.keys()]);
+  spawnVehicle(kind: VehicleKind = "car", at?: string): Vehicle {
+    const node = at ?? this.rng.pick([...this.grid.nodes.keys()]);
     const id = `${kind}-${this.vehicleCounter++}`;
     const v = new Vehicle(id, kind, this.grid, node, kind === "ambulance" ? 55 : 42, this.rng, this.tick);
     v.intentCoordination = Boolean(this.config.intent_coordination);
@@ -413,8 +440,26 @@ export class SimulationEngine {
     this.vehicles.set(id, v);
     this.trust.register(id);
     this.bus.register(id);
-    if (kind === "ambulance") this.log("ambulance_spawned", `Ambulance ${id} dispatched toward ${v.destination}.`);
-    if (kind === "malicious") this.log("malicious_spawned", `Attacker ${id} joined and is injecting false hazards.`);
+    if (kind === "ambulance")
+      this.log("ambulance_spawned", `Ambulance ${id} on station at ${junctionName(node)}.`);
+    if (kind === "malicious") {
+      this.log(
+        "malicious_spawned",
+        `Attacker ${id} joined at ${junctionName(node)} and is injecting false hazard reports.`,
+      );
+      this.explain(
+        "attack",
+        id,
+        node,
+        `${id} joined the network at ${junctionName(node)} and is fabricating hazards.`,
+        [
+          "it holds a valid certificate and its signatures verify — this is an insider, not an outsider",
+          "it reports accidents, oil spills and stalled vehicles on roads where there is nothing",
+        ],
+        "cryptography proves who sent a frame; it says nothing about whether the frame is true, which is why corroboration exists as a separate mechanism",
+        "watch its trust score fall as report after report goes uncorroborated, and its certificate eventually be revoked",
+      );
+    }
     return v;
   }
 
@@ -456,12 +501,21 @@ export class SimulationEngine {
    * confirmed incident, and the emergency response opens a corridor through
    * it.
    *
-   * Prefers a road that genuinely has two vehicles on it. Only if no such
-   * road exists does it place a second vehicle there, which is a demo
-   * affordance rather than something traffic does — the returned `staged`
-   * flag and the event log say which of the two happened.
+   * Three kinds, looked for in this order, and every one of them uses
+   * vehicles that are already where they are:
+   *
+   * 1. two vehicles on the same road — a shunt;
+   * 2. two vehicles converging on the same junction down different roads,
+   *    which is where most urban collisions actually happen;
+   * 3. one vehicle alone — it leaves the carriageway.
+   *
+   * What it never does is materialise a second car on top of the first. That
+   * was the old fallback, and it is a teleport in full view of the audience.
+   * `kind` in the result says which of the three happened.
    */
-  triggerCollision(segmentId?: string): { segment_id: string; vehicles: string[]; staged: boolean } | null {
+  triggerCollision(
+    segmentId?: string,
+  ): { segment_id: string; vehicles: string[]; kind: CollisionKind; solo: boolean } | null {
     const eligible = new Map<string, Vehicle[]>();
     for (const vehicle of this.vehicles.values()) {
       const segId = vehicle.currentSegmentId;
@@ -470,42 +524,122 @@ export class SimulationEngine {
       if (!eligible.has(segId)) eligible.set(segId, []);
       eligible.get(segId)!.push(vehicle);
     }
+    if (!eligible.size) return null;
 
     const pairs = [...eligible.entries()].filter(([, vs]) => vs.length >= 2);
+    const converging = pairs.length ? null : this.convergingPair(eligible);
     let crashSegment: string;
-    let first: Vehicle;
-    let second: Vehicle;
-    let staged = false;
+    let involved: Vehicle[];
+    let kind: CollisionKind;
 
     if (pairs.length) {
       const [segId, vs] = pairs[this.rng.int(0, pairs.length - 1)];
       crashSegment = segId;
-      [first, second] = vs;
-    } else if (eligible.size) {
-      // Nobody is sharing a road. Bring a second vehicle onto one.
+      involved = [vs[0], vs[1]];
+      kind = "shunt";
+    } else if (converging) {
+      [crashSegment, involved] = converging;
+      kind = "junction";
+    } else {
       const keys = [...eligible.keys()].sort();
       crashSegment = keys[this.rng.int(0, keys.length - 1)];
-      first = eligible.get(crashSegment)![0];
-      second = this.spawnVehicle("car");
-      second.node = first.node;
-      second.route = [...first.route];
-      second.progress = Math.max(0, first.progress - 0.08);
-      staged = true;
-    } else {
-      return null;
+      involved = [eligible.get(crashSegment)![0]];
+      kind = "solo";
     }
 
+    const meetingPoint = involved[0].nextNode;
     const seg = this.grid.segments.get(crashSegment)!;
-    first.crash(this.tick);
-    second.crash(this.tick);
+    for (const vehicle of involved) vehicle.crash(this.tick);
     seg.raiseHazard("accident", CRASH_HAZARD_TTL_TICKS, this.tick);
     this.metrics.hazardRaised(seg.id, this.tick);
-    this.collisions.push({ tick: this.tick, segment_id: seg.id, vehicles: [first.id, second.id] });
+    const ids = involved.map((v) => v.id);
+    this.collisions.push({ tick: this.tick, segment_id: seg.id, vehicles: ids, kind });
     if (this.collisions.length > 10) this.collisions.shift();
 
-    const how = staged ? "a second vehicle was brought onto the road" : "two vehicles already there";
-    this.log("collision", `Collision on ${seg.id} between ${first.id} and ${second.id} (${how}).`);
-    return { segment_id: seg.id, vehicles: [first.id, second.id], staged };
+    const description = {
+      shunt: `Collision on ${roadName(seg.id)}: ${ids[0]} ran into the back of ${ids[ids.length - 1]}.`,
+      junction: `Collision at ${junctionName(meetingPoint ?? seg.b)}: ${ids[0]} and ${ids[ids.length - 1]} arrived together from different approaches.`,
+      solo: `Single-vehicle accident on ${roadName(seg.id)}: ${ids[0]} left the carriageway.`,
+    }[kind];
+    this.log("collision", description);
+    this.explain(
+      "collision",
+      ids[0],
+      seg.id,
+      description,
+      [
+        `${ids.length} vehicle${ids.length === 1 ? "" : "s"} involved, all of them already on ${roadName(seg.id)}`,
+        `the lane is now ${Math.round(seg.occupancy * 100)}% blocked`,
+        "every wreck broadcasts DENM causeCode 2 (accident) on a three-tick duty cycle from here on",
+      ],
+      "a wreck is immobile and stays immobile: it is recovered and removed from the network, never repaired in place",
+      "traffic behind is warned before it can see anything, and an ambulance can be given a corridor through",
+    );
+    return { segment_id: seg.id, vehicles: ids, kind, solo: kind === "solo" };
+  }
+
+  /**
+   * Two vehicles closing on the same junction down different roads.
+   *
+   * Both have to be near the end of their approach, or this is two cars that
+   * happen to share a next junction rather than two cars about to meet at one.
+   */
+  private convergingPair(eligible: Map<string, Vehicle[]>): [string, Vehicle[]] | null {
+    const approaching = new Map<string, Vehicle[]>();
+    for (const vehicles of eligible.values())
+      for (const vehicle of vehicles) {
+        if (vehicle.progress < 0.5 || !vehicle.nextNode) continue;
+        if (!approaching.has(vehicle.nextNode)) approaching.set(vehicle.nextNode, []);
+        approaching.get(vehicle.nextNode)!.push(vehicle);
+      }
+
+    const candidates = [...approaching.entries()]
+      .filter(([, vs]) => new Set(vs.map((v) => v.currentSegmentId)).size >= 2)
+      .map(([node]) => node)
+      .sort();
+    if (!candidates.length) return null;
+
+    const node = candidates[this.rng.int(0, candidates.length - 1)];
+    const atNode = [...approaching.get(node)!].sort((a, b) =>
+      (a.currentSegmentId ?? "").localeCompare(b.currentSegmentId ?? "") || a.id.localeCompare(b.id),
+    );
+    const first = atNode[0];
+    const second = atNode.find((v) => v.currentSegmentId !== first.currentSegmentId)!;
+    // The debris lands on the approach the first one was on.
+    return [first.currentSegmentId!, [first, second]];
+  }
+
+  /**
+   * Take wrecks off the road once recovery has reached them.
+   *
+   * A vehicle that has been in a collision used to sit still for twenty-two
+   * ticks and then drive off, which is not something wrecked cars do and was
+   * the most obviously wrong thing on the map. It leaves on a truck instead,
+   * and a replacement enters the city elsewhere so density holds steady.
+   */
+  private recoverWrecks() {
+    for (const vehicle of [...this.vehicles.values()]) {
+      if (!vehicle.readyForRecovery) continue;
+      const where = vehicle.currentSegmentId ?? vehicle.node;
+      this.vehicles.delete(vehicle.id);
+      this.rsuNetwork.vehicleCell.delete(vehicle.id);
+      this.log("recovery", `${vehicle.id} recovered from ${roadName(where)} and removed from the network.`);
+      this.explain(
+        "recovery",
+        vehicle.id,
+        where,
+        `${vehicle.id} was lifted off ${roadName(where)} and has left the network.`,
+        [
+          `it had been blocking the lane since tick ${vehicle.crashedAtTick}`,
+          "its certificate stops being used because the station is gone, not because it was distrusted",
+        ],
+        "recovery takes a fixed time to reach a wreck; the wreck leaves on a truck and does not rejoin traffic",
+        vehicle.kind === "car"
+          ? "a different vehicle enters the city elsewhere, so traffic density holds steady"
+          : "the city is one vehicle lighter",
+      );
+      if (vehicle.kind === "car") this.spawnVehicle("car");
+    }
   }
 
   /**
@@ -516,7 +650,6 @@ export class SimulationEngine {
    * just happened somewhere specific.
    */
   dispatchAmbulanceTo(node: string): Vehicle {
-    const ambulance = this.spawnVehicle("ambulance");
     // Start it far enough away to actually be seen responding. Spawning at a
     // random node put it *on* the incident about one time in sixteen, giving
     // a route of one node: no journey, no corridor, no priority request, and
@@ -534,11 +667,16 @@ export class SimulationEngine {
     const viaSignal = far.filter((origin) =>
       this.grid.shortestPath(origin, node).slice(1).some((hop) => this.trafficLights.has(hop)),
     );
-    ambulance.node = this.rng.pick(viaSignal.length ? viaSignal : far);
+    // Placed at its station on creation rather than moved there afterwards —
+    // a vehicle that exists in one place and is then relocated is a teleport,
+    // even when it happens within a single tick.
+    const ambulance = this.spawnVehicle("ambulance", this.rng.pick(viaSignal.length ? viaSignal : far));
     ambulance.destination = node;
     ambulance.route = this.grid.shortestPath(ambulance.node, node);
     ambulance.progress = 0;
-    this.log("ambulance_dispatch", `${ambulance.id} responding to ${node}.`);
+    ambulance.dwellTicks = 0;
+    ambulance.tripPurpose = "responding to an incident";
+    this.log("ambulance_dispatch", `${ambulance.id} responding to ${junctionName(node)}.`);
     return ambulance;
   }
 
@@ -581,12 +719,32 @@ export class SimulationEngine {
 
   setCloudOnline(online: boolean) {
     this.cloudOnline = online;
-    if (online) this.log("cloud_restored", "Cloud uplink restored.");
-    else
-      this.log(
-        "cloud_outage",
-        `Cloud uplink severed — ${this.config.cloud_dependent ? "safety messaging lost" : "edge keeps operating"}.`,
-      );
+    if (online) {
+      this.log("cloud_restored", "Cloud uplink restored.");
+      return;
+    }
+    this.log(
+      "cloud_outage",
+      `Cloud uplink severed — ${this.config.cloud_dependent ? "safety messaging lost" : "edge keeps operating"}.`,
+    );
+    this.explain(
+      "outage",
+      "cloud",
+      null,
+      this.config.cloud_dependent
+        ? "The cloud uplink was cut, and safety messaging went with it."
+        : "The cloud uplink was cut, and nothing stopped.",
+      [
+        `architecture in use: ${this.config.label}`,
+        this.config.cloud_dependent
+          ? "every hazard report on this architecture travels to a data centre and back before anyone is warned"
+          : "hazard reports travel vehicle to vehicle and are corroborated at the roadside, neither of which touches the uplink",
+      ],
+      "an architecture is cloud-dependent if any safety path requires the uplink; that single flag is the only thing changed between these runs",
+      this.config.cloud_dependent
+        ? "availability drops to zero for as long as the outage lasts"
+        : "availability is unaffected; only the analytics upload stops",
+    );
   }
 
   injectHazard(segmentId?: string): string | null {
@@ -596,7 +754,7 @@ export class SimulationEngine {
     const kind = this.rng.pick(HAZARD_TYPES);
     seg.raiseHazard(kind, this.rng.int(35, 70), this.tick);
     this.metrics.hazardRaised(seg.id, this.tick);
-    this.log("hazard", `${kind.replace(/_/g, " ")} on ${seg.id}.`);
+    this.log("hazard", `${kind.replace(/_/g, " ")} on ${roadName(seg.id)}.`);
     return seg.id;
   }
 
@@ -637,6 +795,7 @@ export class SimulationEngine {
     this.runEdgeAndLearning();
     this.runInfrastructure(serviceUp);
     this.pedestrianLifecycle();
+    this.recoverWrecks();
     this.hazardLifecycle();
 
     this.metrics.sampleSegments(this.grid.allSegments().map((s) => s.occupancy));
@@ -667,7 +826,22 @@ export class SimulationEngine {
       for (const msg of msgs) outbound.push({ vehicle: v, msg });
       if (rerouted) {
         this.reroutesThisTick += 1;
-        this.log("v2v_reroute", `${v.id} rerouted around congestion reported by peers.`);
+        const why = v.lastDiversion;
+        const avoided = (why?.avoided ?? []).map(roadName).join(" and ");
+        this.log("v2v_reroute", `${v.id} diverted away from ${avoided || "a road peers warned about"}.`);
+        this.explain(
+          "divert",
+          v.id,
+          v.currentSegmentId,
+          `${v.id} changed route to avoid ${avoided || "a road ahead"}.`,
+          [
+            `it is ${v.tripPurpose || "on a trip"}, heading for ${junctionName(v.destination)}`,
+            `the reason was ${why?.reason ?? "a peer report"}`,
+            `nothing it has seen itself — this came over the air, from ${v.knownOccupancy.size} road${v.knownOccupancy.size === 1 ? "" : "s"} peers have told it about`,
+          ],
+          "a vehicle diverts when a road within the next few hops is reported above the congestion threshold or carries a hazard warning — and it finishes the road it is already on first, so the diversion starts at the next junction",
+          `it is now ${v.rerouteCount} diversion${v.rerouteCount === 1 ? "" : "s"} into this journey`,
+        );
       }
       if (completedTrip !== null) this.metrics.tripCompleted(completedTrip);
       if (v.node !== previousNode) transitions += 1;
@@ -774,6 +948,22 @@ export class SimulationEngine {
     }
 
     this.pendingReports = [...seen.values()];
+
+    // Keep the raw claims, so a road can later be asked who said what about
+    // it. Only frames that were actually delivered get here.
+    for (const { senderId, msg } of this.pendingReports) {
+      const segmentId = String(msg.payload.segment_id ?? "");
+      if (!segmentId) continue;
+      this.reportLog.push({
+        segmentId,
+        senderId,
+        pseudonym: msg.pseudonym,
+        tick: this.tick,
+        confidence: Number(msg.payload.confidence ?? 0),
+      });
+    }
+    if (this.reportLog.length > REPORT_LOG_LIMIT)
+      this.reportLog.splice(0, this.reportLog.length - REPORT_LOG_LIMIT);
   }
 
   private uploadTelemetry(vehicle: Vehicle, serviceUp: boolean) {
@@ -847,18 +1037,51 @@ export class SimulationEngine {
       );
       for (const segId of this.corroboration.newlyConfirmed) {
         this.alerts.raiseAlert(segId, this.tick, "corroborated hazard");
-        this.log("incident_confirmed", `Incident corroborated on ${segId}; warning dispatched.`);
+        this.log("incident_confirmed", `Incident corroborated on ${roadName(segId)}; warning dispatched.`);
+
+        const seg = this.grid.segments.get(segId);
+        const reporters = this.reportLog.filter(
+          (r) => r.segmentId === segId && this.tick - r.tick <= 12,
+        );
+        const distinct = new Set(reporters.map((r) => r.senderId));
+        this.explain(
+          "confirm",
+          segId,
+          segId,
+          `The network now believes there is an incident on ${roadName(segId)}.`,
+          [
+            `${distinct.size} independent station${distinct.size === 1 ? "" : "s"} reported it within the last 12 ticks`,
+            `reporters: ${[...distinct].map((id) => this.vehicles.get(id)?.pseudonym ?? id).join(", ") || "—"}`,
+            seg?.hazardActive
+              ? `there really is a ${(seg.hazardType || "hazard").replace(/_/g, " ")} there`
+              : "there is in fact nothing there — this is a false positive",
+          ],
+          "a report is promoted to a confirmed incident when at least one other station independently reports the same road inside the corroboration window, and the reporter's trust is above the threshold",
+          "a warning goes out to every vehicle routed through that road, and the road is priced as one to avoid",
+        );
       }
       for (const { senderId } of this.pendingReports) {
         const v = this.vehicles.get(senderId);
         if (v) v.trustHint = this.trust.score(senderId);
         if (this.trust.shouldRevoke(senderId) && !this.authority.revoked.has(senderId)) {
           this.authority.revoke(senderId);
+          const reports = this.trust.seen.get(senderId) ?? 0;
+          const score = this.trust.score(senderId);
           this.log(
             "certificate_revoked",
-            `${senderId} revoked: ${this.trust.seen.get(senderId) ?? 0} reports, trust ${this.trust
-              .score(senderId)
-              .toFixed(2)}.`,
+            `${senderId} revoked: ${reports} reports, trust ${score.toFixed(2)}.`,
+          );
+          this.explain(
+            "revoke",
+            senderId,
+            null,
+            `${senderId}'s certificate was revoked — the network will not act on it again.`,
+            [
+              `${reports} reports submitted`,
+              `${Math.round(score * 100)}% of them were corroborated by an independent witness`,
+            ],
+            "revocation needs both a long enough record to be sure and a low enough corroboration rate to be damning — one report that nobody confirmed is a lossy radio, not a liar",
+            "its frames are still received and still verify, and are discarded before they can confirm anything",
           );
         }
       }
@@ -1147,6 +1370,19 @@ export class SimulationEngine {
     if (this.eventLog.length > MAX_EVENTS) this.eventLog.shift();
   }
 
+  /** Write down a decision and the argument behind it. */
+  private explain(
+    kind: DecisionKind,
+    subject: string,
+    where: string | null,
+    headline: string,
+    evidence: string[],
+    rule: string,
+    effect: string,
+  ): Decision {
+    return this.ledger.record({ tick: this.tick, kind, subject, where, headline, evidence, rule, effect });
+  }
+
   stateSnapshot(): SimulationState {
     const cellCounts = new Map<string, number>();
     for (const rsuId of this.rsuNetwork.vehicleCell.values())
@@ -1201,6 +1437,15 @@ export class SimulationEngine {
           .sort(),
       })),
       collisions: [...this.collisions],
+      // Why the system did what it did. The ledger is the running argument;
+      // the dossiers put belief and ground truth side by side, one road at a
+      // time — only for roads anyone could have an opinion about, so a quiet
+      // city does not ship thirty empty records every tick.
+      decisions: this.ledger.recent(30),
+      dossiers: this.grid
+        .allSegments()
+        .filter((s) => s.hazardActive || s.confirmedIncident)
+        .map((s) => incidentDossier(s, this.grid, this.reportLog, this.trust)),
       perception: {
         shared: this.perceptionStats.shared,
         warned_blind: this.perceptionStats.warnedBlind,

@@ -38,7 +38,14 @@ from app.simulation.fog import FogNode, build_fog_clusters
 from app.simulation.rsu import RSU
 from app.simulation.traffic_light import TrafficLight
 from app.simulation.vehicle import Vehicle, VehicleKind
-from app.simulation.world import HAZARD_TYPES, CityGrid, Pedestrian, node_id
+from app.simulation.world import (
+    HAZARD_TYPES,
+    CityGrid,
+    Pedestrian,
+    junction_name,
+    node_id,
+    road_name,
+)
 
 MAX_EVENTS = 150
 FOG_CLUSTER_SIZE = 3
@@ -166,8 +173,8 @@ class SimulationEngine:
             return [size // 2]
         return [round(i * (size - 1) / (n - 1)) for i in range(n)]
 
-    def spawn_vehicle(self, kind: VehicleKind = "car") -> Vehicle:
-        node = self.rng.choice(list(self.grid.nodes.keys()))
+    def spawn_vehicle(self, kind: VehicleKind = "car", at: str | None = None) -> Vehicle:
+        node = at or self.rng.choice(list(self.grid.nodes.keys()))
         vid = f"{kind}-{next(self._vehicle_counter)}"
         v = Vehicle(
             id=vid,
@@ -184,9 +191,13 @@ class SimulationEngine:
         self.trust.register(vid)
         self.bus.register(vid)
         if kind == "ambulance":
-            self._log("ambulance_spawned", f"Ambulance {vid} dispatched toward {v.destination}.")
+            self._log("ambulance_spawned", f"Ambulance {vid} on station at {junction_name(node)}.")
         elif kind == "malicious":
-            self._log("malicious_spawned", f"Attacker {vid} joined and is injecting false hazards.")
+            self._log(
+                "malicious_spawned",
+                f"Attacker {vid} joined at {junction_name(node)} and is injecting "
+                "false hazard reports.",
+            )
         return v
 
     def trigger_collision(self, segment_id: str | None = None) -> dict | None:
@@ -198,10 +209,17 @@ class SimulationEngine:
         report into a confirmed incident, and the emergency response opens a
         corridor through it.
 
-        Prefers a road that genuinely has two vehicles on it. Only if no such
-        road exists does it place a second vehicle there, which is a demo
-        affordance rather than something traffic does -- the event log says
-        which of the two happened.
+        Three kinds, looked for in this order, and every one of them uses
+        vehicles that are already where they are:
+
+        1. two vehicles on the same road -- a shunt;
+        2. two vehicles converging on the same junction down different roads,
+           which is where most urban collisions actually happen;
+        3. one vehicle alone -- it leaves the carriageway.
+
+        What it never does is materialise a second car on top of the first.
+        That was the old fallback, and it is a teleport in full view of the
+        audience. `kind` in the result says which of the three happened.
         """
         eligible: dict[str, list[Vehicle]] = {}
         for vehicle in self.vehicles.values():
@@ -211,37 +229,100 @@ class SimulationEngine:
             if segment_id is not None and seg_id != segment_id:
                 continue
             eligible.setdefault(seg_id, []).append(vehicle)
-
-        pairs = {sid: vs for sid, vs in eligible.items() if len(vs) >= 2}
-        staged = False
-        if pairs:
-            crash_segment = self.rng.choice(sorted(pairs))
-            first, second = pairs[crash_segment][:2]
-        elif eligible:
-            # Nobody is sharing a road. Bring a second vehicle onto one.
-            crash_segment = self.rng.choice(sorted(eligible))
-            first = eligible[crash_segment][0]
-            second = self.spawn_vehicle("car")
-            second.node = first.node
-            second.route = list(first.route)
-            second.progress = max(0.0, first.progress - 0.08)
-            staged = True
-        else:
+        if not eligible:
             return None
 
+        pairs = {sid: vs for sid, vs in eligible.items() if len(vs) >= 2}
+        converging = None if pairs else self._converging_pair(eligible)
+        if pairs:
+            crash_segment = self.rng.choice(sorted(pairs))
+            involved = pairs[crash_segment][:2]
+            kind = "shunt"
+        elif converging is not None:
+            crash_segment, involved = converging
+            kind = "junction"
+        else:
+            crash_segment = self.rng.choice(sorted(eligible))
+            involved = eligible[crash_segment][:1]
+            kind = "solo"
+
         seg = self.grid.segments[crash_segment]
-        first.crash(self.tick)
-        second.crash(self.tick)
+        for vehicle in involved:
+            vehicle.crash(self.tick)
         seg.raise_hazard("accident", CRASH_HAZARD_TTL_TICKS, self.tick)
         self.metrics.hazard_raised(seg.id, "accident", self.tick)
+        ids = [v.id for v in involved]
         self.collisions.append(
-            {"tick": self.tick, "segment_id": seg.id, "vehicles": [first.id, second.id]}
+            {"tick": self.tick, "segment_id": seg.id, "vehicles": ids, "kind": kind}
         )
         del self.collisions[:-10]
 
-        how = "a second vehicle was brought onto the road" if staged else "two vehicles already there"
-        self._log("collision", f"Collision on {seg.id} between {first.id} and {second.id} ({how}).")
-        return {"segment_id": seg.id, "vehicles": [first.id, second.id], "staged": staged}
+        meeting_point = involved[0].next_node or seg.b
+        descriptions = {
+            "shunt": f"Collision on {road_name(seg.id)}: {ids[0]} ran into the back of {ids[-1]}.",
+            "junction": (
+                f"Collision at {junction_name(meeting_point)}: {ids[0]} and {ids[-1]} "
+                "arrived together from different approaches."
+            ),
+            "solo": f"Single-vehicle accident on {road_name(seg.id)}: {ids[0]} left the carriageway.",
+        }
+        self._log("collision", descriptions[kind])
+        return {"segment_id": seg.id, "vehicles": ids, "kind": kind, "solo": kind == "solo"}
+
+    def _converging_pair(
+        self, eligible: dict[str, list[Vehicle]]
+    ) -> tuple[str, list[Vehicle]] | None:
+        """Two vehicles closing on the same junction down different roads.
+
+        Both have to be near the end of their approach, or this is two cars
+        that happen to share a next junction rather than two cars about to
+        meet at one.
+        """
+        approaching: dict[str, list[Vehicle]] = {}
+        for vehicles in eligible.values():
+            for vehicle in vehicles:
+                if vehicle.progress < 0.5 or vehicle.next_node is None:
+                    continue
+                approaching.setdefault(vehicle.next_node, []).append(vehicle)
+
+        candidates = sorted(
+            node for node, vs in approaching.items() if len({v.current_segment_id for v in vs}) >= 2
+        )
+        if not candidates:
+            return None
+
+        node = self.rng.choice(candidates)
+        at_node = sorted(approaching[node], key=lambda v: (v.current_segment_id or "", v.id))
+        first = at_node[0]
+        second = next(v for v in at_node if v.current_segment_id != first.current_segment_id)
+        # Both are mid-approach, so both have a current segment by construction.
+        approach = first.current_segment_id
+        if approach is None:
+            return None
+        # The debris lands on the approach the first one was on.
+        return approach, [first, second]
+
+    def _recover_wrecks(self) -> None:
+        """Take wrecks off the road once recovery has reached them.
+
+        A vehicle that has been in a collision used to sit still for
+        twenty-two ticks and then drive off, which is not something wrecked
+        cars do and was the most obviously wrong thing on the map. It leaves on
+        a truck instead, and a replacement enters the city elsewhere so density
+        holds steady.
+        """
+        for vehicle in list(self.vehicles.values()):
+            if not vehicle.ready_for_recovery:
+                continue
+            del self.vehicles[vehicle.id]
+            self.rsu_network.vehicle_cell.pop(vehicle.id, None)
+            where = vehicle.current_segment_id or vehicle.node
+            self._log(
+                "recovery",
+                f"{vehicle.id} recovered from {road_name(where)} and removed from the network.",
+            )
+            if vehicle.kind == "car":
+                self.spawn_vehicle("car")
 
     def dispatch_ambulance_to(self, node: str) -> Vehicle:
         """Send an ambulance towards a specific junction.
@@ -250,7 +331,6 @@ class SimulationEngine:
         background traffic and useless for showing a response to an incident
         that just happened somewhere specific.
         """
-        ambulance = self.spawn_vehicle("ambulance")
         # Start it far enough away to actually be seen responding. Spawning at
         # a random node put it *on* the incident about one time in sixteen,
         # giving a route of one node: no journey, no corridor, no priority
@@ -271,12 +351,17 @@ class SimulationEngine:
             for origin in far
             if any(hop in self.traffic_lights for hop in self.grid.shortest_path(origin, node)[1:])
         ]
-        ambulance.node = self.rng.choice(via_signal or far)
+        # Placed at its station on creation rather than moved there
+        # afterwards -- a vehicle that exists in one place and is then
+        # relocated is a teleport, even within a single tick.
+        ambulance = self.spawn_vehicle("ambulance", at=self.rng.choice(via_signal or far))
         ambulance.destination = node
         ambulance.route = self.grid.shortest_path(ambulance.node, node)
         ambulance.progress = 0.0
+        ambulance.dwell_ticks = 0
+        ambulance.trip_purpose = "responding to an incident"
         ambulance.trip_started_tick = self.tick
-        self._log("ambulance_dispatch", f"{ambulance.id} responding to {node}.")
+        self._log("ambulance_dispatch", f"{ambulance.id} responding to {junction_name(node)}.")
         return ambulance
 
     def despawn_vehicle(self) -> str | None:
@@ -422,6 +507,7 @@ class SimulationEngine:
         self._run_edge_and_learning()
         self._run_infrastructure(service_up)
         self._pedestrian_lifecycle()
+        self._recover_wrecks()
         self._hazard_lifecycle()
         self._sample_metrics(service_up)
 
