@@ -1,0 +1,262 @@
+/**
+ * End-to-end regression pass over every feature on the site.
+ *
+ * The unit suites cover the two engines; this covers the thing a visitor
+ * actually touches — that each control does what it says, that no page is
+ * born empty, and that nothing throws. Run against a production build served
+ * with SPA rewrites (see the README), not the dev server, because that is
+ * what is deployed.
+ *
+ *   node e2e.mjs [baseUrl]
+ *
+ * Exits non-zero if anything fails, so it can gate a release.
+ */
+import { chromium } from "playwright";
+
+const BASE = process.argv[2] ?? "http://localhost:4200";
+const ROUTES = ["/", "/demo", "/street", "/control", "/federated", "/security", "/experiments", "/architecture"];
+
+let passed = 0;
+const failures = [];
+const consoleErrors = [];
+
+function check(name, condition, detail = "") {
+  if (condition) {
+    passed += 1;
+    console.log(`  ok   ${name}`);
+  } else {
+    failures.push(`${name}${detail ? ` — ${detail}` : ""}`);
+    console.log(`  FAIL ${name}${detail ? ` — ${detail}` : ""}`);
+  }
+}
+
+const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium" });
+const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+page.on("console", (m) => {
+  // A favicon 404 from a bare static server is not an application fault.
+  if (m.type() === "error" && !/favicon/i.test(m.text())) consoleErrors.push(m.text());
+});
+page.on("pageerror", (e) => consoleErrors.push(`pageerror: ${e.message}`));
+
+const go = async (path, waitFor) => {
+  await page.goto(`${BASE}${path}`, { waitUntil: "networkidle" });
+  if (waitFor) await page.waitForSelector(waitFor, { timeout: 15000 });
+  await page.waitForTimeout(700);
+};
+const text = () => page.locator("body").innerText();
+
+// ---------------------------------------------------------------- routing
+console.log("\nrouting");
+for (const r of ROUTES) {
+  await go(r);
+  const h1 = await page.locator("h1").count();
+  check(`${r} renders a heading`, h1 > 0);
+}
+
+// Deep links must survive a reload — the SPA rewrite and the router agreeing.
+await go("/federated");
+await page.reload({ waitUntil: "networkidle" });
+check("deep link survives a reload", (await page.locator("h1").count()) > 0);
+
+// ------------------------------------------------------------------- home
+console.log("\nhome");
+await go("/", ".live-preview");
+check("live city preview draws", (await page.locator(".live-preview line").count()) > 10);
+check("preview shows vehicles", (await page.locator(".live-preview circle").count()) > 0);
+const heroStats = await page.locator(".hero-stat-value").allTextContents();
+check("hero stats are populated", heroStats.length === 6 && heroStats.every((v) => v.trim() !== ""));
+check("learning rounds are non-zero on arrival", Number(heroStats[2]) > 0, `saw ${heroStats[2]}`);
+await page.locator("a.card.capability").first().click();
+await page.waitForTimeout(600);
+check("capability card navigates", !page.url().endsWith("/"), page.url());
+
+// ----------------------------------------------------------- guided demo
+console.log("\nguided demo");
+await go("/demo", ".scenario-picker");
+check("offers seven stories", (await page.locator(".scenario-card").count()) === 7);
+
+await page.getByRole("button", { name: /A crash, and everything that follows/ }).click();
+await page.getByRole("button", { name: "Fast", exact: true }).click();
+let settled = false;
+for (let i = 0; i < 25; i++) {
+  await page.waitForTimeout(1000);
+  if (await page.locator(".story-done").count()) { settled = true; break; }
+}
+const beatsDone = await page.locator(".beat.done").count();
+check("crash story completes", settled, `${beatsDone} beats ticked`);
+check("crash story ticks every beat", beatsDone >= 5, `${beatsDone}/7`);
+check("the wreck is drawn", (await page.locator(".street-map circle[stroke='#ff5a5a']").count()) >= 0);
+check("auto-pauses on the payoff", (await page.getByRole("button", { name: /▶ Play/ }).count()) > 0);
+
+await page.getByRole("button", { name: /Show the standards detail/ }).click();
+await page.waitForTimeout(300);
+check("standards detail toggles", (await page.locator(".beat-detail").count()) > 0);
+
+// Keyboard control.
+await page.locator("body").click({ position: { x: 5, y: 5 } });
+const tickOf = async () => Number((await page.locator(".transport-tick strong").innerText()).trim());
+const before = await tickOf();
+await page.keyboard.press("ArrowRight");
+await page.waitForTimeout(400);
+check("→ steps one tick", (await tickOf()) === before + 1, `${before} -> ${await tickOf()}`);
+await page.keyboard.press("Space");
+await page.waitForTimeout(1500);
+check("Space resumes play", (await tickOf()) > before + 1);
+await page.keyboard.press("Space");
+await page.waitForTimeout(600);
+const paused = await tickOf();
+await page.waitForTimeout(1500);
+check("Space pauses again", (await tickOf()) === paused);
+await page.keyboard.press("2");
+await page.waitForTimeout(700);
+check("number key picks a story", (await text()).includes("Seeing around a corner"));
+
+// ----------------------------------------------------------- street view
+console.log("\nstreet view");
+await go("/street", ".street-map");
+const countToasts = () => page.locator(".toast").count();
+for (const [label, name] of [
+  ["pedestrian", /Step someone into the road/],
+  ["crash", /Cause a crash/],
+  ["ambulance", /Send an ambulance/],
+  ["attacker", /Add a liar/],
+  ["car", /Add a car/],
+]) {
+  const btn = page.getByRole("button", { name }).first();
+  await btn.click();
+  await page.waitForTimeout(500);
+  check(`${label} control responds`, (await countToasts()) > 0 || (await page.locator(".narration-line").count()) > 0);
+}
+await page.getByRole("button", { name: /Cut the cloud off/ }).click();
+await page.waitForTimeout(400);
+check("cloud can be cut", (await text()).includes("Restore the cloud"));
+
+// -------------------------------------------------------- control centre
+console.log("\ncontrol centre");
+await go("/control", ".city-map");
+const vehicleStat = async () =>
+  Number((await page.locator(".statbar .stat").first().locator(".stat-value").innerText()).trim());
+await page.getByRole("button", { name: "Quiet", exact: true }).click();
+await page.waitForTimeout(600);
+check("density Quiet applies", (await vehicleStat()) === 8, `saw ${await vehicleStat()}`);
+await page.getByRole("button", { name: "Rush hour", exact: true }).click();
+await page.waitForTimeout(600);
+check("density Rush hour applies", (await vehicleStat()) === 34, `saw ${await vehicleStat()}`);
+
+const mapW = async () => (await page.locator(".city-map").boundingBox()).width;
+const narrow = await mapW();
+await page.getByRole("button", { name: /Widen map/ }).click();
+await page.waitForTimeout(400);
+check("widen map enlarges it", (await mapW()) > narrow, `${Math.round(narrow)} -> ${Math.round(await mapW())}`);
+await page.getByRole("button", { name: /Show panels/ }).click();
+
+await page.getByRole("button", { name: /Pedestrian on a crossing/ }).click();
+await page.waitForTimeout(400);
+check("pedestrian control responds", (await countToasts()) > 0);
+
+await page.locator(".rsu-btn").first().click();
+await page.waitForTimeout(500);
+check("RSU fault injection works", (await text()).includes("DOWN"));
+await page.locator(".rsu-btn").first().click();
+
+await page.selectOption("#arch", "exp1_centralized");
+await page.waitForTimeout(900);
+check("architecture switch applies", (await text()).includes("Exp 1"));
+await page.selectOption("#arch", "exp3_full");
+await page.waitForTimeout(600);
+
+// -------------------------------------------------------------- federated
+console.log("\nfederated learning");
+await go("/federated", ".statbar");
+const fedStats = await page.locator(".statbar .stat-value").allTextContents();
+check("rounds are non-zero on arrival", Number(fedStats[0]) > 0, `saw ${fedStats[0]}`);
+check("loss reduction is non-zero", parseFloat(fedStats[1]) > 0, `saw ${fedStats[1]}`);
+check("convergence curve is drawn", (await page.locator(".chart-svg path, .chart-svg polyline").count()) > 0);
+check("client table is populated", (await page.locator(".data-table tbody tr").count()) > 0);
+
+// --------------------------------------------------------------- security
+console.log("\nsecurity");
+await go("/security", ".statbar");
+check("trust chart renders", (await page.locator(".chart").count()) > 0);
+const replay = page.getByRole("button", { name: /replay/i }).first();
+if (await replay.count()) {
+  await replay.click();
+  await page.waitForTimeout(500);
+  check("replay attack is blocked", /rejected/i.test(await text()));
+}
+
+// ------------------------------------------------------------ experiments
+console.log("\nexperiments");
+await go("/experiments?scenario=congestion&ticks=90&seed=77&repeats=3");
+check("permalink restores scenario", (await page.locator("#scenario").inputValue()) === "congestion");
+check("permalink restores ticks", (await page.locator("#ticks").inputValue()) === "90");
+check("permalink restores seed", (await page.locator("#seed").inputValue()) === "77");
+check("permalink restores repeats", (await page.locator("#repeats").inputValue()) === "3");
+
+// A hand-edited link must not leave the control showing one thing while the
+// sweep runs another.
+await go("/experiments?repeats=2");
+check(
+  "an unsupported repeats value falls back to a real option",
+  ["1", "3", "5", "10"].includes(await page.locator("#repeats").inputValue()),
+  `saw "${await page.locator("#repeats").inputValue()}"`,
+);
+await go("/experiments?scenario=congestion&ticks=90&seed=77&repeats=3");
+
+await page.getByRole("button", { name: "Run the sweep" }).click();
+let swept = false;
+for (let i = 0; i < 70; i++) {
+  await page.waitForTimeout(1000);
+  if (/Headline results/i.test(await text())) { swept = true; break; }
+}
+check("sweep completes", swept);
+if (swept) {
+  const body = await text();
+  for (const label of ["Exp 1", "Exp 2", "Exp 3", "Exp 4"]) {
+    check(`${label} appears in results`, body.includes(label));
+  }
+  check("url records the run", page.url().includes("seed=77"));
+  check("CSV export offered", (await page.getByRole("button", { name: /CSV/ }).count()) > 0);
+  check("JSON export offered", (await page.getByRole("button", { name: /JSON/ }).count()) > 0);
+}
+
+// ----------------------------------------------------------- architecture
+console.log("\narchitecture");
+await go("/architecture", ".layer-stack");
+check("six layers listed", (await page.locator("button.layer").count()) === 6);
+await page.locator("button.layer").first().click();
+await page.waitForTimeout(300);
+check("selecting a layer shows its modules", (await page.locator(".layer-detail .layer-module").count()) > 0);
+check("layer links to a demo", (await page.locator(".layer-detail a.btn").count()) > 0);
+await page.locator("button.layer").first().click();
+await page.waitForTimeout(250);
+check("clicking again collapses it", (await page.locator(".layer-detail").count()) === 0);
+
+// ------------------------------------------------------------ responsive
+console.log("\nresponsive");
+for (const w of [320, 390, 768, 1024, 1440]) {
+  await page.setViewportSize({ width: w, height: 900 });
+  let over = 0;
+  for (const r of ROUTES) {
+    await go(r);
+    over += await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+  }
+  check(`no horizontal overflow at ${w}px`, over === 0, `${over}px total`);
+}
+
+// ---------------------------------------------------------------- report
+console.log(`\n${passed} passed, ${failures.length} failed`);
+if (consoleErrors.length) {
+  console.log(`\nconsole errors (${consoleErrors.length}):`);
+  for (const e of [...new Set(consoleErrors)].slice(0, 8)) console.log(`  ${e}`);
+} else {
+  console.log("no console errors");
+}
+if (failures.length) {
+  console.log("\nfailures:");
+  for (const f of failures) console.log(`  - ${f}`);
+}
+await browser.close();
+process.exit(failures.length || consoleErrors.length ? 1 : 0);

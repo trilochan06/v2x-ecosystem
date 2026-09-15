@@ -279,9 +279,32 @@ cd ../frontend
 npm run lint && npm run typecheck && npm test && npm run build
 ```
 
-127 tests — 101 Python, 26 TypeScript — at 93% backend coverage. The frame-size
+268 tests — 195 Python, 73 TypeScript — at 93% backend coverage. The frame-size
 constants are pinned to identical values on both sides, so if either engine
 drifts, one of the two suites fails.
+
+### The end-to-end pass
+
+Those suites cover the two engines. They cannot catch a page that renders a
+grid of zeros, a control wired to nothing, or a layout that pushes the
+viewport sideways at 360 px — all of which had happened. `frontend/e2e.mjs`
+drives a real browser over a production build and checks every feature a
+visitor can touch: 64 assertions across routing, the guided demo's stories and
+keyboard control, every scenario control on the street view and control
+centre, the federated and security pages being alive on arrival, the
+experiment sweep with its permalink and exports, and horizontal overflow at
+five widths.
+
+```bash
+cd frontend
+npm run build
+npx vite preview --port 4200 --strictPort &   # or any static server with SPA rewrites
+npm run e2e                                   # exits non-zero on any failure
+```
+
+It is not in CI: it needs a browser download that would slow the deploy
+workflow and add a flake surface to something whose job is to publish. Run it
+before a release.
 
 ### Operating it
 

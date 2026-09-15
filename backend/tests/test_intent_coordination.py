@@ -15,7 +15,6 @@ import pytest
 
 from app.config import CONFIGS, EXP3_FULL, EXP4_COORDINATED
 from app.network.messages import MESSAGE_SPECS, MessageType
-from app.simulation import vehicle as vehicle_module
 from app.simulation.engine import SimulationEngine
 from app.simulation.vehicle import Vehicle
 from app.simulation.world import CityGrid
@@ -143,7 +142,7 @@ def test_least_cost_path_matches_the_plain_search_on_a_uniform_grid():
 
 def test_least_cost_path_reports_an_unreachable_goal():
     grid = CityGrid(size=4)
-    assert grid.least_cost_path("0-0", "3-3", lambda seg: None) == []
+    assert grid.least_cost_path("0-0", "3-3", lambda _seg: None) == []
 
 
 # ----------------------------------------------------------- the wiring

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { DEFAULT_REPEATS, SCENARIOS } from "../sim/experiments";
 import { useSweep } from "../sim/useSweep";
 import {
@@ -12,6 +13,20 @@ import { BarComparison } from "../components/charts/BarComparison";
 import { SERIES_COLORS } from "../components/charts/palette";
 import type { ExperimentSuite, Scenario } from "../types";
 
+/**
+ * Seed counts the control actually offers.
+ *
+ * Declared once and used both to render the dropdown and to validate the URL,
+ * because a link carrying a value the control cannot display would leave the
+ * dropdown showing one thing while the sweep ran another.
+ */
+const REPEAT_CHOICES = [
+  { value: 1, label: "1 — no interval" },
+  { value: 3, label: "3 — quick" },
+  { value: 5, label: "5 — recommended" },
+  { value: 10, label: "10 — slow" },
+];
+
 /** Below this many corroborated alerts, the latency average is noise and the
  *  page says so instead of printing a number. */
 const MIN_LATENCY_SAMPLES = 5;
@@ -24,15 +39,61 @@ const SHORT: Record<string, string> = {
 
 export function Experiments() {
   const scenarios: Scenario[] = SCENARIOS;
-  const [scenario, setScenario] = useState("normal");
-  const [ticks, setTicks] = useState(250);
-  const [seed, setSeed] = useState(4242);
-  const [repeats, setRepeats] = useState(DEFAULT_REPEATS);
+  /**
+   * The run settings live in the URL so a result can be handed to someone
+   * else exactly. "Our detection F1 was 0.56" is a claim; a link that
+   * reproduces the run that produced it is evidence, and the engine is
+   * deterministic from its seed, so the same link gives the same numbers.
+   */
+  const [params, setParams] = useSearchParams();
+  const clamp = (v: number, lo: number, hi: number, fallback: number) =>
+    Number.isFinite(v) && v >= lo && v <= hi ? v : fallback;
+  const paramNumber = (key: string, lo: number, hi: number, fallback: number) =>
+    clamp(Number(params.get(key)), lo, hi, fallback);
+
+  const scenarioParam = params.get("scenario");
+  const [scenario, setScenario] = useState(
+    scenarios.some((s) => s.key === scenarioParam) ? (scenarioParam as string) : "normal",
+  );
+  const [ticks, setTicks] = useState(() => paramNumber("ticks", 60, 800, 250));
+  const [seed, setSeed] = useState(() => paramNumber("seed", 0, 1e9, 4242));
+  const [repeats, setRepeats] = useState(() => {
+    const asked = Number(params.get("repeats"));
+    return REPEAT_CHOICES.some((c) => c.value === asked) ? asked : DEFAULT_REPEATS;
+  });
+  const [copied, setCopied] = useState(false);
   // The sweep runs in a worker, so the page stays interactive while 15
   // simulations grind away and the user can change their mind.
   const { suite, running, done, total, error, run: startSweep, cancel } = useSweep();
 
-  const run = () => startSweep({ scenarioKey: scenario, ticks, seed, repeats });
+  const run = () => {
+    // Record what is being run before running it, so the address bar always
+    // describes the result on screen.
+    setParams(
+      { scenario, ticks: String(ticks), seed: String(seed), repeats: String(repeats) },
+      { replace: true },
+    );
+    startSweep({ scenarioKey: scenario, ticks, seed, repeats });
+  };
+
+  const copyLink = async () => {
+    const url = new URL(window.location.href);
+    url.search = new URLSearchParams({
+      scenario,
+      ticks: String(ticks),
+      seed: String(seed),
+      repeats: String(repeats),
+    }).toString();
+    try {
+      await navigator.clipboard.writeText(url.toString());
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard access can be refused (insecure origin, permissions). Put
+      // the link in the address bar instead so it can still be copied by hand.
+      window.history.replaceState(null, "", url.toString());
+    }
+  };
 
   const labels = suite ? suite.runs.map((r) => SHORT[r.config.key] ?? r.config.label) : [];
   const series = (pick: (r: ExperimentSuite["runs"][number]) => number) =>
@@ -82,14 +143,20 @@ export function Experiments() {
         <div className="field">
           <label htmlFor="repeats">Seeds per configuration</label>
           <select id="repeats" value={repeats} onChange={(e) => setRepeats(Number(e.target.value))}>
-            <option value={1}>1 — no interval</option>
-            <option value={3}>3 — quick</option>
-            <option value={5}>5 — recommended</option>
-            <option value={10}>10 — slow</option>
+            {REPEAT_CHOICES.map((c) => (
+              <option key={c.value} value={c.value}>
+                {c.label}
+              </option>
+            ))}
           </select>
         </div>
         <button className="btn primary" onClick={run} disabled={running}>
           {running ? `Running ${done} of ${total}…` : "Run the sweep"}
+        </button>
+        {/* The settings are already in the address bar; this just saves
+            someone selecting it by hand. */}
+        <button className="btn" onClick={copyLink} disabled={running}>
+          {copied ? "Link copied" : "Copy a link to this run"}
         </button>
         {running && (
           <button className="btn" onClick={cancel}>

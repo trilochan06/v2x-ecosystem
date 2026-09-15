@@ -11,7 +11,9 @@
     "lint": "eslint . --max-warnings 0",
     "typecheck": "tsc -b --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "e2e": "node e2e.mjs",
+    "e2e:serve": "vite preview --port 4200 --strictPort"
   },
   "dependencies": {
     "react": "^18.3.1",

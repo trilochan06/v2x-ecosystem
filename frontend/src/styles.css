@@ -1005,3 +1005,28 @@ button.layer.open { border-color: var(--accent); background: #13243a; }
   .kv > div { flex-wrap: wrap; gap: 2px; }
   .headline-grid { grid-template-columns: 1fr; }
 }
+
+/* The key under a chart — which line is which. */
+.chart-key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin-top: 10px;
+  font-size: 0.78rem;
+  color: var(--text-2);
+}
+.chart-key span { display: flex; align-items: center; gap: 7px; }
+.chart-key i { width: 14px; height: 3px; border-radius: 2px; flex: none; }
+
+/* Keyboard hints on the guided demo. */
+.shortcut-hint { flex-basis: 100%; margin: 6px 0 0; }
+.shortcut-hint kbd {
+  font: inherit;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  background: var(--surface-2);
+  color: var(--text-2);
+}

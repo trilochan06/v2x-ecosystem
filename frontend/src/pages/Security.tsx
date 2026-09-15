@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { CERTIFICATE_BYTES, CERTIFICATE_DIGEST_BYTES } from "../sim/core";
-import { commands, useSimulation } from "../sim/runtime";
+import { TrustHistory } from "../components/charts/TrustHistory";
+import { commands, getTrustHistory, useSimulation } from "../sim/runtime";
 
 export function Security() {
   const { state } = useSimulation();
@@ -99,6 +100,7 @@ export function Security() {
 
         <section className="panel">
           <h2>Trust scores — lowest first</h2>
+          <TrustHistory samples={getTrustHistory()} />
           <div className="table-scroll">
             <table className="data-table">
             <thead>

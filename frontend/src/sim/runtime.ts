@@ -59,8 +59,56 @@ let engine = buildEngine();
 const listeners = new Set<(s: SimulationState) => void>();
 let timer: number | undefined;
 
+/**
+ * Trust as it moves, rather than only where it currently stands.
+ *
+ * The security page could show the present score of every vehicle but not the
+ * thing that actually makes the argument: an attacker's score falling away
+ * from everyone else's as the network accumulates evidence. The engine has no
+ * reason to carry that history, so it is sampled here — bounded, client-side,
+ * and thrown away when the engine is rebuilt.
+ */
+export interface TrustSample {
+  tick: number;
+  honest: number;
+  attacker: number | null;
+  attackers: number;
+  revoked: number;
+}
+
+const TRUST_HISTORY_LIMIT = 160;
+let trustHistory: TrustSample[] = [];
+
+export function getTrustHistory(): TrustSample[] {
+  return trustHistory;
+}
+
+function mean(xs: number[]): number | null {
+  return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
+}
+
+function sampleTrust(snapshot: SimulationState) {
+  const honest: number[] = [];
+  const attacker: number[] = [];
+  for (const [id, entry] of Object.entries(snapshot.trust)) {
+    // Only vehicles still in the city — a revoked one that despawned would
+    // otherwise drag the average around forever.
+    if (!snapshot.vehicles.some((v) => v.id === id)) continue;
+    (id.startsWith("malicious") ? attacker : honest).push(entry.trust_score);
+  }
+  trustHistory.push({
+    tick: snapshot.tick,
+    honest: mean(honest) ?? 1,
+    attacker: mean(attacker),
+    attackers: attacker.length,
+    revoked: snapshot.security.pseudonyms.revoked_vehicles,
+  });
+  if (trustHistory.length > TRUST_HISTORY_LIMIT) trustHistory.shift();
+}
+
 function publish() {
   const snapshot = engine.stateSnapshot();
+  sampleTrust(snapshot);
   for (const listener of listeners) listener(snapshot);
 }
 
@@ -91,6 +139,7 @@ export function switchArchitecture(key: string) {
   // Warmed too, or switching architecture would blank every page that reads
   // aggregate state.
   engine = buildEngine(config, engine.vehicles.size || DEFAULT_VEHICLE_COUNT);
+  trustHistory = [];
   publish();
 }
 

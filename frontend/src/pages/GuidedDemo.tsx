@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { Narration } from "../components/Narration";
 import { StreetMap } from "../components/StreetMap";
@@ -24,6 +24,41 @@ export function GuidedDemo() {
   const [selectedVehicle, setSelectedVehicle] = useState<string | null>(null);
   const [selectedSegment, setSelectedSegment] = useState<string | null>(null);
   const [showDetail, setShowDetail] = useState(false);
+
+  /**
+   * Keyboard control, because this page is meant to be presented.
+   *
+   * Space to play and pause, arrow to step, R for a fresh city, 1-7 to pick a
+   * story. Hunting for a button mid-sentence is the difference between talking
+   * over a demo and being interrupted by one.
+   *
+   * Ignored while a control has focus, so Space on a focused button still
+   * activates that button rather than doing two things at once.
+   */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = document.activeElement;
+      if (el instanceof HTMLElement && ["INPUT", "SELECT", "TEXTAREA", "BUTTON"].includes(el.tagName))
+        return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+      if (e.key === " ") {
+        e.preventDefault();
+        if (guided.playing) guided.pause();
+        else guided.play();
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        guided.stepOnce();
+      } else if (e.key === "r" || e.key === "R") {
+        guided.reset();
+      } else if (/^[1-9]$/.test(e.key)) {
+        const pick = ALL_SCENARIOS[Number(e.key) - 1];
+        if (pick) guided.runScenario(pick.id);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   if (!state) return <div className="loading">Starting the simulator…</div>;
 
@@ -151,6 +186,10 @@ export function GuidedDemo() {
             <span className="transport-tick">
               tick <strong>{state.tick}</strong>
             </span>
+            <p className="muted small shortcut-hint">
+              <kbd>Space</kbd> play/pause · <kbd>→</kbd> step · <kbd>R</kbd> reset ·{" "}
+              <kbd>1</kbd>–<kbd>7</kbd> pick a story
+            </p>
           </div>
         </section>
 
