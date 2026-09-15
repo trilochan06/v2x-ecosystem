@@ -118,7 +118,9 @@ RECOVERY_TICKS = 22
 # A wrecked vehicle re-announces itself on this duty cycle. Every tick would
 # be both unrealistic and a denial of service on its own neighbours.
 CRASH_REPORT_INTERVAL_TICKS = 3
-# What a wreck does to the lane it is sitting in.
+# What a wreck does to the lane it is sitting in, on top of the traffic queued
+# behind it. Applied by the engine when it counts what is on each road -- a
+# wreck is an obstruction, not a vehicle in flow.
 CRASH_LANE_BLOCKAGE = 0.25
 
 
@@ -269,14 +271,12 @@ class Vehicle:
             return outbound, rerouted, completed_trip
 
         seg = self.grid.segment_between(self.node, nxt)
-        seg.occupancy = min(1.0, seg.occupancy + (0.02 if self.kind == "ambulance" else 0.05))
 
         # A wreck does not drive. It sits in the lane, blocks it, and keeps
         # announcing itself until recovery lifts it out -- which is what gives
         # the traffic behind time to be warned and rerouted.
         if self.crashed:
             self.recovery_ticks = max(0, self.recovery_ticks - 1)
-            seg.occupancy = min(1.0, seg.occupancy + CRASH_LANE_BLOCKAGE)
             self.glosa_advice = None
             # A wreck is stationary, not deaf and blind. It already announces
             # the accident, so refusing to share the pedestrian standing in

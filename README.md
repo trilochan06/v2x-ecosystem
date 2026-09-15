@@ -73,19 +73,22 @@ optimistic). "Separated" means the two intervals do not overlap.
 
 | Metric | Exp 1 — Centralized | Exp 3 — Proposed | Separated? |
 | --- | --- | --- | --- |
-| Cloud uplink overhead (KB/tick) | 2.820 ± 0.058 | **0.323 ± 0.000** | **yes — −88.5%** |
+| Cloud uplink overhead (KB/tick) | 2.853 ± 0.109 | **0.323 ± 0.000** | **yes — −88.7%** |
 | Availability during cloud outage | 0.0 ± 0.0 % | **100.0 ± 0.0 %** | **yes — +100 pts** |
-| Hazard detection precision | 0.874 ± 0.065 | **0.988 ± 0.027** | **yes — +0.11** |
-| Hazard detection F1 | 0.302 ± 0.216 | 0.483 ± 0.160 | no — intervals overlap |
-| Hazard-to-warning latency (ticks) | 22.2 ± 11.0 | 15.0 ± 9.1 | no — intervals overlap |
-| Mobility (segments / 100 vehicle-ticks) | 1.225 ± 0.032 | 1.260 ± 0.033 | no — intervals overlap |
+| Hazard detection precision | 0.861 ± 0.034 | **0.994 ± 0.015** | **yes — +0.13** |
+| Hazard detection F1 | 0.403 ± 0.076 | 0.515 ± 0.083 | no — intervals overlap |
+| Hazard-to-warning latency (ticks) | 27.2 ± 8.9 | 17.5 ± 6.8 | no — intervals overlap |
+| Mobility (segments / 100 vehicle-ticks) | 2.883 ± 0.100 | 2.890 ± 0.043 | no — intervals overlap |
 | Federated rounds completed | 0 | 24 | — |
 | Raw telemetry avoided by FL | — | 275.6 KB | — |
 
-These were re-measured after the vehicle model was corrected — see [Vehicle
-motion, and why it was wrong](#vehicle-motion-and-why-it-was-wrong). Every
-figure moved a little; **which three separate and which three do not did not
-change.**
+These were re-measured twice: after the vehicle model was corrected, and again
+after road occupancy stopped saturating — see [Vehicle motion, and why it was
+wrong](#vehicle-motion-and-why-it-was-wrong) and [Occupancy was a saturated
+signal](#occupancy-was-a-saturated-signal). Every figure moved. **Which three
+separate and which three do not has not changed across any of it**, which is
+the part that matters: the findings survived two corrections to the model they
+were measured on.
 
 **Three results hold up and three do not, and the difference matters.**
 
@@ -194,6 +197,38 @@ predicting noise. The grid now has land use (centre, civic quarter, industrial
 estate, residential); destinations are drawn in proportion to it, and a vehicle
 parks for a few ticks at the end of a trip instead of bouncing off it. Jams now
 form in the middle of the map on their own.
+
+## Occupancy was a saturated signal
+
+Road occupancy accumulated: every vehicle added a fixed amount each tick and
+the whole thing decayed slowly. Over the eighteen ticks a car takes to cross a
+250 m segment that drives one road to about 0.7, and two cars peg it at 1.0.
+So "occupancy" was really a binary *has anything been here lately* — and three
+separate things were reading it:
+
+- the map coloured almost every occupied road as jammed, which is why it looked
+  like a diagram of red lines rather than a city;
+- the roadside units' estimate of road state was 100% on every road they had
+  heard about, so traffic-state estimation was not estimating anything;
+- the congestion forecaster was fitting a signal with almost no dynamic range.
+
+It is a density now: how many vehicles are on a road against how many
+constitute a jam (four, for a segment this size and a city this sparse),
+smoothed so it does not flicker as a car crosses a junction. One car on an
+empty road reads as light traffic, because that is what it is.
+
+Two consequences worth stating plainly. **Mobility more than doubled** —
+1.23 → 2.88 segments per 100 vehicle-ticks — because vehicles are no longer
+crawling through phantom congestion. And **congestion duration fell from ~35%
+of road-ticks to 1.4%**, which is the honest figure for fourteen vehicles in a
+thirty-six junction city: that is not rush hour, and it should not have been
+reported as though it were. The congestion scenario in the experiment harness
+is where congestion is actually meant to be measured.
+
+Three steps in the guided demo that used to be hedged as "doesn't happen every
+run" — traffic pulling over for an ambulance, junctions being preempted, and an
+attacker's certificate being revoked — now land on all twelve seeds measured,
+so they are no longer hedged.
 
 ## The city is drawn as a map
 

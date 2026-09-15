@@ -18,6 +18,19 @@ import heapq
 import math
 from dataclasses import dataclass, field
 
+# How many vehicles on one 250 m segment count as a jam.
+#
+# Deliberately small. A real 250 m lane holds far more, but this simulation runs
+# tens of vehicles over sixty segments, not hundreds -- at a realistic jam
+# density nothing would ever be congested and there would be no congestion story
+# to measure. Four is the number at which a road here is saturated, and every
+# occupancy figure in the project is relative to it.
+JAM_VEHICLES_PER_SEGMENT = 4
+
+#: How quickly occupancy follows what is on the road. Low enough that a road
+#: does not flicker as a car crosses a junction, high enough to keep up.
+OCCUPANCY_SMOOTHING = 0.25
+
 HAZARD_TYPES = ["accident", "stalled_vehicle", "hard_braking", "waterlogging", "oil_spill", "fog_bank"]
 
 
@@ -385,7 +398,33 @@ class CityGrid:
                     result.append(seg)
         return result
 
-    def decay_occupancy(self, factor: float = 0.985) -> None:
+    def set_occupancy(self, counts: dict[str, int], extra: dict[str, float]) -> None:
+        """Set each road's occupancy from what is actually on it this tick.
+
+        This used to accumulate: every vehicle added a fixed amount each tick
+        and the whole thing decayed slowly. Over the eighteen ticks a car takes
+        to cross a segment that drives one road to about 0.7, and two cars peg
+        it at 1.0 -- so occupancy was effectively a binary "has anything been
+        here lately", nearly every occupied road read as jammed, and the
+        roadside units' estimate of road state was 100% everywhere. Three
+        things depended on that number and all three were reading a saturated
+        signal.
+
+        It is a density now: how many vehicles are on the road against how many
+        constitute a jam, smoothed so it does not flicker between ticks. One car
+        on an empty road reads as light traffic, which is what it is.
+
+        `extra` carries what blocks a lane without being traffic -- a wreck
+        sitting in it.
+        """
         for seg in self.segments.values():
-            seg.occupancy = max(0.0, seg.occupancy * factor)
+            instant = min(
+                1.0,
+                counts.get(seg.id, 0) / JAM_VEHICLES_PER_SEGMENT + extra.get(seg.id, 0.0),
+            )
+            seg.occupancy = (
+                seg.occupancy * (1 - OCCUPANCY_SMOOTHING) + instant * OCCUPANCY_SMOOTHING
+            )
+            if seg.occupancy < 1e-4:
+                seg.occupancy = 0.0
             seg.record()

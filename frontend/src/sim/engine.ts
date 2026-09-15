@@ -11,6 +11,7 @@ import {
   TrafficLight,
   Vehicle,
   VehicleKind,
+  CRASH_LANE_BLOCKAGE,
   buildFogClusters,
 } from "./agents";
 import {
@@ -1366,8 +1367,24 @@ export class SimulationEngine {
       seg.tickDown();
       if (wasActive && !seg.hazardActive) this.metrics.hazardCleared(seg.id);
     }
-    this.grid.decayOccupancy();
+    this.recomputeOccupancy();
     this.replayGuard.prune(this.tick);
+  }
+
+  /** Count what is on each road and set occupancy from it — see
+   *  `CityGrid.setOccupancy` for why this replaced an accumulator. */
+  private recomputeOccupancy() {
+    const counts = new Map<string, number>();
+    const blocked = new Map<string, number>();
+    for (const v of this.vehicles.values()) {
+      const segId = v.currentSegmentId;
+      if (!segId) continue;
+      counts.set(segId, (counts.get(segId) ?? 0) + 1);
+      // A wreck is not traffic; it is an obstruction, and it takes a share of
+      // the lane on top of whatever is queued behind it.
+      if (v.crashed) blocked.set(segId, (blocked.get(segId) ?? 0) + CRASH_LANE_BLOCKAGE);
+    }
+    this.grid.setOccupancy(counts, blocked);
   }
 
   private log(type: string, message: string, where: string | null = null) {

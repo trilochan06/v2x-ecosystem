@@ -209,6 +209,9 @@ export const commands = {
     publish();
     return result;
   },
+  /** The first unit still up, so a control can knock one out without its
+   *  caller having to know which ones are already down. */
+  firstLiveRsu: () => [...engine.rsus.values()].find((r) => r.alive)?.id ?? null,
   toggleRsu: (rsuId: string, alive: boolean) => {
     engine.toggleRsu(rsuId, alive);
     publish();

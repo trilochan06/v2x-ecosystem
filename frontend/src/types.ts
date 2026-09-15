@@ -84,6 +84,15 @@ export interface RsuState {
   predictions: Record<string, Prediction>;
   cell_size: number;
   messages_handled: number;
+  /** What this unit infers each local road's state to be, from reports only,
+   *  next to the ground truth it cannot see. */
+  estimates?: {
+    segment_id: string;
+    actual: number;
+    estimated: number | null;
+    reported_tick: number | null;
+    source_trust: number | null;
+  }[];
   fl: { pending_samples: number; rounds_joined: number; samples_contributed: number; drift: number };
 }
 

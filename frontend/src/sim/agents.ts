@@ -43,8 +43,10 @@ const RECOVERY_TICKS = 22;
 /** A wrecked vehicle re-announces itself on this duty cycle. Every tick would
  *  be both unrealistic and a denial of service on its own neighbours. */
 const CRASH_REPORT_INTERVAL_TICKS = 3;
-/** What a wreck does to the lane it is sitting in. */
-const CRASH_LANE_BLOCKAGE = 0.25;
+/** What a wreck does to the lane it is sitting in, on top of the traffic
+ *  queued behind it. Applied by the engine when it counts what is on each
+ *  road — a wreck is an obstruction, not a vehicle in flow. */
+export const CRASH_LANE_BLOCKAGE = 0.25;
 const REROUTE_LOOKAHEAD_HOPS = 3;
 
 // --- M6b: intent coordination
@@ -210,14 +212,12 @@ export class Vehicle {
     if (!nxt) return { outbound, rerouted, completedTrip };
 
     const seg = this.grid.segmentBetween(this.node, nxt);
-    seg.occupancy = Math.min(1, seg.occupancy + (this.kind === "ambulance" ? 0.02 : 0.05));
 
     // A wreck does not drive. It sits in the lane, blocks it, and keeps
     // announcing itself until recovery lifts it out — which is what gives the
     // traffic behind time to be warned and rerouted.
     if (this.crashed) {
       this.recoveryTicks = Math.max(0, this.recoveryTicks - 1);
-      seg.occupancy = Math.min(1, seg.occupancy + CRASH_LANE_BLOCKAGE);
       this.glosaAdvice = null;
       // A wreck is stationary, not deaf and blind. It already announces the
       // accident, so refusing to share the pedestrian standing in front of it
@@ -805,6 +805,20 @@ export class RSU {
       predictions: Object.fromEntries(this.predictions),
       cell_size: cellSize,
       messages_handled: this.messagesHandled,
+      /** The road state this unit has *inferred* from what was reported to it,
+       *  next to what is physically true. The gap between the two is traffic
+       *  state estimation working or failing, and it is the channel a false
+       *  report travels down — so it is worth being able to look at. */
+      estimates: this.localSegments().map((seg) => {
+        const reported = this.reportedOccupancy.get(seg.id);
+        return {
+          segment_id: seg.id,
+          actual: Math.round(seg.occupancy * 1000) / 1000,
+          estimated: reported ? Math.round(reported.occupancy * 1000) / 1000 : null,
+          reported_tick: reported?.tick ?? null,
+          source_trust: reported ? Math.round(reported.trust * 100) / 100 : null,
+        };
+      }),
       fl: {
         pending_samples: this.flClient.pendingSamples,
         rounds_joined: this.flClient.roundsJoined,

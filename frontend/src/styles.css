@@ -1303,3 +1303,79 @@ button.layer.open { border-color: var(--accent); background: #13243a; }
   background: var(--surface-2);
   color: var(--text-2);
 }
+
+/* ------------------------------------------------------- the twelve stages
+   One panel per stage, headline figures always visible and the rows behind
+   them a click away. The figures stay on screen collapsed because the point
+   of the page is that every stage is *running* — hiding the numbers behind a
+   disclosure would undo it. */
+.pipeline .notice { margin-bottom: 4px; }
+
+.stage { padding: 0; overflow: hidden; }
+.stage-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 16px 20px 12px;
+  color: inherit;
+  cursor: pointer;
+}
+.stage-head:hover { background: var(--surface-2); }
+.stage-n {
+  flex: none;
+  font-size: 0.78rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  background: #14263c;
+  border-radius: 6px;
+  padding: 3px 7px;
+  margin-top: 2px;
+}
+.stage-title { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.stage-title strong { font-size: 1rem; }
+.stage-chevron { flex: none; color: var(--muted); }
+
+.stage-figures {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr));
+  gap: 12px;
+  padding: 0 20px 16px;
+}
+.stage-figure { display: flex; flex-direction: column; gap: 1px; }
+.stage-value { font-size: 1.35rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.stage-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+.stage-note { font-size: 0.74rem; color: var(--muted); }
+
+.stage-body {
+  border-top: 1px solid var(--line);
+  padding: 14px 20px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+/* Where a stage is named after a tool we do not run, the panel says so before
+   it says anything else. */
+.stands-in {
+  background: #2a2415;
+  border: 1px solid #5c4a1e;
+  border-left: 3px solid var(--warn);
+  border-radius: 8px;
+  padding: 10px 13px;
+  font-size: 0.84rem;
+  color: #e6d9b4;
+}
+.stands-in strong { color: #f7e9c4; }
+.stage-action { align-self: flex-start; }
+.stage-detail { overflow-x: auto; }
+.stage-source { margin: 0; font-size: 0.74rem; color: var(--muted); }
+.stage-links { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.tick-order { margin: 0; padding-left: 20px; font-size: 0.85rem; color: var(--text-2); }
+.tick-order li { margin-bottom: 3px; }
+.tick-order strong { color: var(--text); }

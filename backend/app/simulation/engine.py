@@ -37,7 +37,7 @@ from app.simulation.digital_twin import DigitalTwin
 from app.simulation.fog import FogNode, build_fog_clusters
 from app.simulation.rsu import RSU
 from app.simulation.traffic_light import TrafficLight
-from app.simulation.vehicle import Vehicle, VehicleKind
+from app.simulation.vehicle import CRASH_LANE_BLOCKAGE, Vehicle, VehicleKind
 from app.simulation.world import (
     HAZARD_TYPES,
     CityGrid,
@@ -301,6 +301,20 @@ class SimulationEngine:
             return None
         # The debris lands on the approach the first one was on.
         return approach, [first, second]
+
+    def _recompute_occupancy(self) -> None:
+        """Count what is on each road and set occupancy from it -- see
+        `CityGrid.set_occupancy` for why this replaced an accumulator."""
+        counts: dict[str, int] = {}
+        blocked: dict[str, float] = {}
+        for vehicle in self.vehicles.values():
+            seg_id = vehicle.current_segment_id
+            if seg_id is None:
+                continue
+            counts[seg_id] = counts.get(seg_id, 0) + 1
+            if vehicle.crashed:
+                blocked[seg_id] = blocked.get(seg_id, 0.0) + CRASH_LANE_BLOCKAGE
+        self.grid.set_occupancy(counts, blocked)
 
     def _recover_wrecks(self) -> None:
         """Take wrecks off the road once recovery has reached them.
@@ -1011,7 +1025,7 @@ class SimulationEngine:
             seg.tick_down()
             if was_active and not seg.hazard_active:
                 self.metrics.hazard_cleared(seg.id)
-        self.grid.decay_occupancy(factor=0.985)
+        self._recompute_occupancy()
         self.replay_guard.prune(self.tick)
 
     def _sample_metrics(self, service_up: bool) -> None:

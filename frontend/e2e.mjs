@@ -14,7 +14,7 @@
 import { chromium } from "playwright";
 
 const BASE = process.argv[2] ?? "http://localhost:4200";
-const ROUTES = ["/", "/demo", "/street", "/control", "/federated", "/security", "/experiments", "/architecture"];
+const ROUTES = ["/", "/demo", "/pipeline", "/street", "/control", "/federated", "/security", "/experiments", "/architecture"];
 
 let passed = 0;
 const failures = [];
@@ -165,8 +165,45 @@ check("architecture switch applies", (await text()).includes("Exp 1"));
 await page.selectOption("#arch", "exp3_full");
 await page.waitForTimeout(600);
 
+// ----------------------------------------------------------- the stages
+console.log("\nthe twelve stages");
+await go("/pipeline", ".stage");
+const stageIds = ["sumo", "network", "sync", "v2v", "v2i", "edge", "hazard", "estimation", "predictive", "federated", "twin", "dashboard"];
+check("twelve stages are listed", (await page.locator(".stage").count()) === 12, `${await page.locator(".stage").count()}`);
+for (const id of stageIds) {
+  check(`${id} is present`, (await page.locator(`#${id}`).count()) === 1);
+}
+// Every stage must show live figures, not an empty shell.
+const emptyStages = [];
+for (const id of stageIds) {
+  const values = await page.locator(`#${id} .stage-value`).allTextContents();
+  if (!values.length || values.every((v) => v.trim() === "" || v.trim() === "0")) emptyStages.push(id);
+}
+check("every stage reports live figures", emptyStages.length === 0, emptyStages.join(", "));
+
+// The three stages named after tools we do not run must say so.
+for (const id of ["sumo", "network", "sync"]) {
+  // The first stage is open on arrival, so open only what is closed.
+  if (!(await page.locator(`#${id} .stage-body`).count())) {
+    await page.locator(`#${id} .stage-head`).click();
+    await page.waitForTimeout(300);
+  }
+  const body = await page.locator(`#${id}`).innerText();
+  check(`${id} discloses what it stands in for`, /This is not/i.test(body));
+}
+
+// And a stage's button must visibly do something.
+await page.locator("#hazard .stage-head").click();
+await page.waitForTimeout(400);
+await page.locator("#hazard").getByRole("button", { name: /Put a hazard on a road/ }).click();
+await page.waitForTimeout(900);
+check("a stage control acts on the simulation", (await page.locator(".toast").count()) > 0);
+
 // --------------------------------------------------------------- the map
 console.log("\nthe map");
+// The stage checks above navigated away; come back to where the map lives.
+await go("/control", ".city-map");
+await page.waitForTimeout(1200);
 check("streets are named on the map", (await page.locator(".street-label").count()) > 0);
 check("districts are named", (await page.locator(".district-label").count()) > 0);
 
@@ -179,6 +216,15 @@ check("the map fits its panel", mapBox.width <= panelBox.width + 1, `${Math.roun
 check("the whole map is on screen at once", mapBox.height <= 1000, `${Math.round(mapBox.height)}px tall`);
 
 const zoomedOut = await page.locator(".city-map").getAttribute("viewBox");
+// Not the dead centre: an incident popup may be sitting there, and the wheel
+// event would land on the popup instead of the map.
+const mapCentre = await page.locator(".city-map").boundingBox();
+await page.mouse.move(mapCentre.x + mapCentre.width * 0.25, mapCentre.y + mapCentre.height * 0.8);
+await page.mouse.wheel(0, -400);
+await page.waitForTimeout(400);
+check("the wheel zooms the map", (await page.locator(".city-map").getAttribute("viewBox")) !== zoomedOut);
+await page.getByRole("button", { name: /Fit the whole city/ }).click();
+await page.waitForTimeout(300);
 await page.getByRole("button", { name: "Zoom in" }).click();
 await page.waitForTimeout(300);
 check("zoom changes the view", (await page.locator(".city-map").getAttribute("viewBox")) !== zoomedOut);

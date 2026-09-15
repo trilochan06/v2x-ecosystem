@@ -98,6 +98,11 @@ export interface Scenario {
 const crashSegment = (s: SimulationState, base: Baseline) =>
   s.collisions.length > base.collisions ? s.collisions[s.collisions.length - 1].segment_id : null;
 
+// Three beats used to be hedged as "doesn't happen every run" and no longer
+// are: emergency vehicles getting through, signals being preempted, and an
+// attacker being revoked all became reliable once road occupancy stopped
+// saturating (see CityGrid.setOccupancy). `scenarios.test.ts` measures which
+// beats genuinely miss, so the hedges follow the evidence rather than habit.
 export const SCENARIOS: Scenario[] = [
   // ------------------------------------------------------------ collision
   {
@@ -141,14 +146,12 @@ export const SCENARIOS: Scenario[] = [
       {
         text: "Traffic ahead pulls over for it",
         detail: "A DENM announcing an emergency vehicle, with its predicted path attached.",
-        optional: true,
         done: (s) => s.vehicles.some((v) => v.yielding),
       },
       {
         text: "Junctions turn green ahead of it",
         detail:
           "SREM asks over the air, SSEM answers. Priority is only requested for junctions within the corridor's lookahead, and the ask itself can be lost — so this depends on where the signals fall along the route.",
-        optional: true,
         done: (s, b) => s.signal_priority.granted > b.sremGranted,
       },
     ],
@@ -274,7 +277,6 @@ export const SCENARIOS: Scenario[] = [
         text: "Its certificate is revoked and it is ignored entirely",
         detail:
           "Needs at least 10 reports AND trust below 0.12, so it takes a few minutes of simulated time. That slowness is deliberate: wrongly revoking an honest vehicle is worse than tolerating a liar for a while, and nothing here lets an operator revoke by decree.",
-        optional: true,
         done: (s, b) => s.security.pseudonyms.revoked_vehicles > b.revoked,
       },
     ],

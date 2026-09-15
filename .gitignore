@@ -16,3 +16,4 @@ htmlcov/
 
 # Patches generated for hand-off; not part of the source tree.
 *.patch
+frontend/shots/

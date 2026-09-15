@@ -108,6 +108,35 @@ export function CityMap({
   const zoomBy = (factor: number) =>
     setView((v) => clampView({ ...v, k: v.k * factor }, width, height));
 
+  /**
+   * Zoom about a point on screen, so the thing under the cursor stays under
+   * the cursor. Zooming about the middle instead — which is the easy version —
+   * makes the map shove whatever you were looking at off the edge, and is most
+   * of why zooming felt wrong.
+   */
+  const zoomAt = (factor: number, clientX: number, clientY: number) => {
+    const box = svgRef.current?.getBoundingClientRect();
+    if (!box) return zoomBy(factor);
+    setView((v) => {
+      const next = Math.min(4, Math.max(MIN_ZOOM, v.k * factor));
+      if (next === v.k) return v;
+      // The drawing is letterboxed inside the element, so the cursor has to be
+      // converted through the drawn area rather than the element's box.
+      const drawn = Math.min(box.width, box.height);
+      const originX = box.x + (box.width - drawn) / 2;
+      const originY = box.y + (box.height - drawn) / 2;
+      const w = width / v.k;
+      const worldX = v.cx - w / 2 + ((clientX - originX) / drawn) * w;
+      const worldY = v.cy - w / 2 + ((clientY - originY) / drawn) * w;
+      const ratio = 1 - v.k / next;
+      return clampView(
+        { k: next, cx: v.cx + (worldX - v.cx) * ratio, cy: v.cy + (worldY - v.cy) * ratio },
+        width,
+        height,
+      );
+    });
+  };
+
   /** Put a place in the middle of the map, zoomed in enough to see it. */
   const goTo = (id: string, k = 2) => {
     const node = id.includes("_") ? id.split("_")[0] : id;
@@ -136,6 +165,27 @@ export function CityMap({
         return screenFraction(view, width, height, (ax + bx) / 2, (ay + by) / 2);
       })()
     : null;
+
+  /**
+   * Wheel zoom.
+   *
+   * Registered by hand rather than through React's `onWheel`, because React
+   * attaches wheel listeners passively and a passive listener cannot call
+   * `preventDefault` — so scrolling over the map zoomed *and* scrolled the
+   * page underneath it. Every map zooms on the wheel; not doing it is most of
+   * what made this one feel broken.
+   */
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      zoomAt(e.deltaY < 0 ? 1.18 : 1 / 1.18, e.clientX, e.clientY);
+    };
+    svg.addEventListener("wheel", onWheel, { passive: false });
+    return () => svg.removeEventListener("wheel", onWheel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [width, height]);
 
   // ------------------------------------------------------------- panning
   const onPointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
@@ -220,6 +270,15 @@ export function CityMap({
         onPointerMove={onPointerMove}
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
+        onDoubleClick={(e) => zoomAt(e.altKey || e.shiftKey ? 1 / 1.8 : 1.8, e.clientX, e.clientY)}
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === "+" || e.key === "=") zoomBy(1.5);
+          else if (e.key === "-" || e.key === "_") zoomBy(1 / 1.5);
+          else if (e.key === "0") setView({ cx: width / 2, cy: height / 2, k: 1 });
+          else return;
+          e.preventDefault();
+        }}
       >
         <defs>
           <filter id="pinShadow" x="-50%" y="-50%" width="200%" height="200%">
@@ -555,11 +614,14 @@ export function CityMap({
           {follow ? `◎ Following ${selectedVehicle}` : `◎ Follow ${selectedVehicle}`}
         </button>
       )}
-      {view.k > MIN_ZOOM && (
-        <span className="map-zoom-hint">
-          {view.k.toFixed(1)}× · {follow ? "following" : "drag to pan"}
-        </span>
-      )}
+      {/* Always say what the map can do. Saying nothing until the user has
+          already discovered zooming is the wrong way round — not knowing you
+          could scroll to zoom is exactly what made it feel like it did not. */}
+      <span className="map-zoom-hint">
+        {view.k > MIN_ZOOM
+          ? `${view.k.toFixed(1)}× · ${follow ? "following" : "drag to pan"}`
+          : "scroll to zoom · double-click to zoom in"}
+      </span>
 
       {alert && alertAnchor?.visible && (
         <MapAlert
