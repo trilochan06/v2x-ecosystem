@@ -58,6 +58,44 @@ export const MAP = {
 } as const;
 
 /**
+ * How each kind of road user is drawn.
+ *
+ * `scale` tracks the road space the vehicle actually takes rather than being
+ * chosen by eye, so a bus reads as a bus for the same reason it weighs more
+ * in the occupancy figure. Colours stay in the same muted register as the
+ * rest of the map: a vehicle layer that shouts drowns the streets underneath,
+ * which is the failure this palette exists to avoid.
+ */
+export interface VehicleStyle {
+  readonly color: string;
+  readonly scale: number;
+  readonly label: string;
+  /** One letter for the marker, where there is room for one. */
+  readonly glyph: string;
+}
+
+export const VEHICLE_STYLE: Record<string, VehicleStyle> = {
+  car: { color: "#3D4A5C", scale: 1, label: "Car", glyph: "C" },
+  bus: { color: "#2E7D9A", scale: 1.5, label: "Bus", glyph: "B" },
+  truck: { color: "#6B5B4E", scale: 1.4, label: "Truck", glyph: "T" },
+  rickshaw: { color: "#C9962A", scale: 0.86, label: "Auto-rickshaw", glyph: "R" },
+  motorbike: { color: "#C2663B", scale: 0.74, label: "Motorbike", glyph: "M" },
+  bicycle: { color: "#2E9B62", scale: 0.66, label: "Bicycle", glyph: "Y" },
+  ambulance: { color: "#E14B4B", scale: 1.18, label: "Ambulance", glyph: "A" },
+  fire: { color: "#B5392C", scale: 1.5, label: "Fire engine", glyph: "F" },
+  police: { color: "#2A4D8F", scale: 1.18, label: "Police", glyph: "P" },
+  malicious: { color: "#9B59D0", scale: 1, label: "Attacker", glyph: "X" },
+};
+
+export const styleFor = (kind: string): VehicleStyle => VEHICLE_STYLE[kind] ?? VEHICLE_STYLE.car;
+
+/** Unprotected users. The legend groups these because it is the distinction
+ *  the network acts on, not what they are called. */
+export const VRU_KINDS = new Set(["bicycle", "motorbike"]);
+/** No on-board unit: on the road, absent from the network. */
+export const UNEQUIPPED_KINDS = new Set(["bicycle"]);
+
+/**
  * Live traffic colour for an occupancy in 0..1.
  *
  * `FREE_FLOWING` is the threshold below which the traffic layer draws nothing

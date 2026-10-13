@@ -19,7 +19,130 @@ import {
 } from "./core";
 
 // ----------------------------------------------------------- vehicle
-export type VehicleKind = "car" | "ambulance" | "malicious";
+export type VehicleKind =
+  | "car"
+  | "ambulance"
+  | "fire"
+  | "police"
+  | "malicious"
+  | "bus"
+  | "truck"
+  | "rickshaw"
+  | "motorbike"
+  | "bicycle";
+
+/**
+ * What distinguishes one kind of road user from another.
+ *
+ * Three of these fields do real work and none of them is decoration.
+ *
+ * `pcu` is passenger-car units, the standard way traffic engineering counts
+ * mixed traffic: a road is saturated by the space its users take up, not by
+ * how many of them there are. Counting a bicycle and an articulated truck as
+ * one vehicle each is what makes a cycle lane look like a traffic jam.
+ *
+ * `equipped` says whether there is an on-board unit aboard, and it is the
+ * interesting one. A bicycle has no radio, so it transmits nothing — no CAM,
+ * no DENM, no intent. It is not a quiet participant in the network; it is not
+ * in the network at all, and the only way the infrastructure learns it is
+ * there is that an equipped vehicle sees it and says so in a CPM. That is
+ * precisely the gap collective perception exists to close, and an unequipped
+ * road user is the only thing that can demonstrate it closing.
+ *
+ * `vru` marks an unprotected user. A collision that dents a car kills a
+ * cyclist, so a vehicle that knows of one ahead slows harder than it would
+ * for traffic.
+ */
+export interface VehicleProfile {
+  readonly label: string;
+  readonly speedKmh: number;
+  readonly pcu: number;
+  readonly equipped: boolean;
+  readonly vru: boolean;
+  /** Entitled to a green corridor and right of way. */
+  readonly emergency: boolean;
+  /** Hazard vocabulary used when a CPM reports this user in the lane. */
+  readonly perceivedAs: string | null;
+}
+
+const base = {
+  pcu: 1,
+  equipped: true,
+  vru: false,
+  emergency: false,
+  perceivedAs: null,
+} as const;
+
+export const VEHICLE_PROFILES: Record<VehicleKind, VehicleProfile> = {
+  car: { ...base, label: "Car", speedKmh: 42 },
+
+  // --- emergency services: run hot, get the corridor, still one car of road
+  ambulance: { ...base, label: "Ambulance", speedKmh: 55, emergency: true },
+  fire: { ...base, label: "Fire engine", speedKmh: 45, pcu: 2.5, emergency: true },
+  police: { ...base, label: "Police", speedKmh: 58, emergency: true },
+
+  // An insider: properly enrolled, properly equipped, and lying.
+  malicious: { ...base, label: "Attacker", speedKmh: 42 },
+
+  // --- bulk traffic
+  bus: { ...base, label: "Bus", speedKmh: 30, pcu: 2.5 },
+  truck: { ...base, label: "Truck", speedKmh: 36, pcu: 2 },
+  // Three wheels, a small engine and about half a car's footprint. Ubiquitous
+  // in Indian city traffic, which is the context this network is modelled for.
+  rickshaw: { ...base, label: "Auto-rickshaw", speedKmh: 34, pcu: 0.5 },
+
+  // --- two-wheelers: unprotected riders
+  // Powered two-wheelers do carry OBUs, but the rider is still exposed, so
+  // this one transmits *and* is treated as vulnerable.
+  motorbike: {
+    ...base,
+    label: "Motorbike",
+    speedKmh: 48,
+    pcu: 0.35,
+    vru: true,
+    perceivedAs: "motorcyclist_on_roadway",
+  },
+  // No radio. Known to the network only through other vehicles' eyes.
+  bicycle: {
+    ...base,
+    label: "Bicycle",
+    speedKmh: 16,
+    pcu: 0.2,
+    equipped: false,
+    vru: true,
+    perceivedAs: "cyclist_on_roadway",
+  },
+};
+
+/** The ordinary traffic the city tops up and recycles. Emergency services are
+ *  dispatched and attackers injected, so neither belongs in the mix. */
+export const TRAFFIC_MIX: readonly { kind: VehicleKind; share: number }[] = [
+  { kind: "car", share: 0.44 },
+  { kind: "bicycle", share: 0.14 },
+  { kind: "motorbike", share: 0.16 },
+  { kind: "rickshaw", share: 0.12 },
+  { kind: "bus", share: 0.06 },
+  { kind: "truck", share: 0.08 },
+];
+
+const ORDINARY_KINDS = new Set<VehicleKind>(TRAFFIC_MIX.map((m) => m.kind));
+
+/** Background traffic, as opposed to a dispatched emergency vehicle or an
+ *  injected attacker. This is the population the city holds steady. */
+export const isOrdinaryTraffic = (kind: VehicleKind): boolean => ORDINARY_KINDS.has(kind);
+
+/** Entitled to right of way and a signal-preempted corridor. Checked by kind
+ *  rather than by name so that adding a fire engine did not require finding
+ *  every place the word "ambulance" stood in for "emergency". */
+export const isEmergency = (kind: VehicleKind): boolean => VEHICLE_PROFILES[kind].emergency;
+
+/** How much a vehicle slows for an unprotected user it knows is in the lane
+ *  ahead. Harder than the pedestrian figure: a pedestrian is crossing and
+ *  will be gone, a cyclist is on the same road for its whole length. */
+const VRU_CAUTION_FACTOR = 0.55;
+/** How long a vehicle keeps believing a VRU report it can no longer confirm
+ *  itself — the same memory the pedestrian case uses, for the same reason. */
+const VRU_MEMORY_TICKS = 8;
 
 const OCCUPANCY_PING_INTERVAL_TICKS = 4;
 const OCCUPANCY_PING_TTL_HOPS = 2;
@@ -111,6 +234,12 @@ export class Vehicle {
   seenPedestrians = new Map<string, number>();
   /** Pedestrians it only knows about because a peer shared them in a CPM. */
   toldPedestrians = new Map<string, number>();
+  /** Unprotected road users sharing the carriageway that this vehicle can
+   *  physically see. segmentId -> tick. */
+  seenVrus = new Map<string, number>();
+  /** The same, known only because a peer shared them. For an unequipped
+   *  cyclist this is the *only* way anyone else finds out. */
+  toldVrus = new Map<string, number>();
   // --- Porsche prototype 3: GLOSA
   knownSignals = new Map<string, { phase: string; tick: number }>();
   glosaAdvice: number | null = null;
@@ -156,6 +285,70 @@ export class Vehicle {
     this.pickNewDestination(tick);
   }
 
+  get profile(): VehicleProfile {
+    return VEHICLE_PROFILES[this.kind];
+  }
+
+  /** Road space this vehicle takes, in passenger-car units. */
+  get pcu(): number {
+    return this.profile.pcu;
+  }
+
+  /** Whether there is a radio aboard. An unequipped user is silent on every
+   *  channel, which is a modelling choice with consequences rather than an
+   *  optimisation: nothing it does reaches the network directly. */
+  get equipped(): boolean {
+    return this.profile.equipped;
+  }
+
+  /** Unprotected in a collision, whether or not it can transmit. */
+  get vulnerable(): boolean {
+    return this.profile.vru;
+  }
+
+  /** Does this vehicle know an unprotected user is on `segmentId`, either
+   *  from its own eyes or from a peer's CPM? The two are deliberately
+   *  indistinguishable here — that equivalence is the point. */
+  knowsVruOn(segmentId: string, tick: number): boolean {
+    for (const source of [this.seenVrus, this.toldVrus]) {
+      const heard = source.get(segmentId);
+      if (heard !== undefined && tick - heard <= VRU_MEMORY_TICKS) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Tell the neighbourhood about an unprotected user in the lane.
+   *
+   * Only unequipped users are worth a frame. A motorbike is already sending
+   * its own CAMs, so re-announcing it would spend bandwidth to tell everyone
+   * something they are being told directly — collective perception earns its
+   * airtime precisely where there is no other source.
+   */
+  maybeShareVruPerception(tick: number): Message | null {
+    if (!this.equipped || this.kind === "malicious") return null;
+    const fresh = [...this.seenVrus.entries()]
+      .filter(([, heard]) => tick - heard <= 1)
+      .map(([segId]) => segId);
+    if (!fresh.length) return null;
+    const [causeCode, subCauseCode] = causeFor("cyclist_on_roadway");
+    return makeMessage({
+      type: "cpm",
+      senderId: this.id,
+      pseudonym: this.pseudonym,
+      payload: {
+        objects: fresh.length,
+        segment_id: fresh[0],
+        cause_code: causeCode,
+        sub_cause_code: subCauseCode,
+      },
+      ttl: 2,
+      createdTick: tick,
+      signed: true,
+      variableBytes: fresh.length * PERCEIVED_OBJECT_BYTES,
+    });
+  }
+
   /**
    * Choose somewhere to go, and a reason for going there.
    *
@@ -167,7 +360,9 @@ export class Vehicle {
   private pickNewDestination(tick: number) {
     const candidates = [...this.grid.nodes.keys()].filter((n) => n !== this.node);
     this.destination =
-      this.kind === "ambulance"
+      // An emergency vehicle is sent where it is needed, not where the city
+      // pulls traffic.
+      isEmergency(this.kind)
         ? this.rng.pick(candidates)
         : weightedPick(candidates, (n) => this.grid.attraction(n), this.rng);
     this.tripPurpose = TRIP_PURPOSE[this.grid.landUse(this.destination)];
@@ -219,6 +414,9 @@ export class Vehicle {
     if (this.crashed) {
       this.recoveryTicks = Math.max(0, this.recoveryTicks - 1);
       this.glosaAdvice = null;
+      // A wrecked bicycle is still an obstruction in the lane, and still
+      // cannot announce itself. Someone else has to see it.
+      if (!this.equipped) return { outbound, rerouted, completedTrip };
       // A wreck is stationary, not deaf and blind. It already announces the
       // accident, so refusing to share the pedestrian standing in front of it
       // would be an odd place to draw the line — and it silently starved
@@ -239,6 +437,11 @@ export class Vehicle {
     // or was only told by a peer, it slows — that equivalence is the point of
     // collective perception.
     if (this.knowsPedestrianOn(seg.id, tick)) speed *= PEDESTRIAN_CAUTION_FACTOR;
+
+    // Likewise for an unprotected user sharing the lane. A cyclist cannot say
+    // it is here, so without a peer's CPM this slowdown simply would not
+    // happen — which is the difference the mechanism makes, in one line.
+    if (this.knowsVruOn(seg.id, tick)) speed *= VRU_CAUTION_FACTOR;
 
     // Hard braking dominates everything else while it lasts.
     if (this.brakingTicks > 0) {
@@ -265,6 +468,16 @@ export class Vehicle {
       }
     }
 
+    // Everything below this line goes on the air, so an unequipped user stops
+    // here. It still moves, still takes road space, still gets in the way —
+    // it just has no way to tell anyone about any of it. It can reroute, in
+    // the sense that a cyclist can turn down a different street, but on what
+    // it can see rather than on anything the network told it.
+    if (!this.equipped) {
+      if (allowV2v && allowRerouting) rerouted = this.reroute(tick);
+      return { outbound, rerouted, completedTrip };
+    }
+
     const hazard = this.maybeReportHazard(seg, this.lookaheadSegment(), tick);
     if (hazard) outbound.push(hazard);
 
@@ -274,6 +487,9 @@ export class Vehicle {
 
       const cpm = this.maybeSharePerception(tick);
       if (cpm) outbound.push(cpm);
+
+      const vruCpm = this.maybeShareVruPerception(tick);
+      if (vruCpm) outbound.push(vruCpm);
 
       const ping = this.maybeShareOccupancy(seg, tick);
       if (ping) outbound.push(ping);
@@ -546,6 +762,22 @@ export class Vehicle {
     this.toldPedestrians.set(segmentId, tick);
   }
 
+  /** A peer's CPM told us about an unprotected user in a lane. For a cyclist
+   *  this is the only channel there is — nothing else on the network can
+   *  carry the fact, because the cyclist cannot speak for itself. */
+  receivePerceivedVru(segmentId: string, tick: number) {
+    this.toldVrus.set(segmentId, tick);
+  }
+
+  /** True when the only reason it knows is that it was told. */
+  vruKnownOnlyFromPeers(segmentId: string | null, tick: number): boolean {
+    if (!segmentId) return false;
+    const seen = this.seenVrus.get(segmentId);
+    if (seen !== undefined && tick - seen <= VRU_MEMORY_TICKS) return false;
+    const told = this.toldVrus.get(segmentId);
+    return told !== undefined && tick - told <= VRU_MEMORY_TICKS;
+  }
+
   /** SPaT from an intersection ahead. */
   receiveSignalPhase(node: string, phase: string, tick: number) {
     this.knownSignals.set(node, { phase, tick });
@@ -595,7 +827,9 @@ export class Vehicle {
    * waiting for one to happen by chance.
    */
   reroute(tick: number): boolean {
-    if (this.kind === "ambulance") return false;
+    // An emergency vehicle holds its assigned route; the corridor is cleared
+    // for it rather than it going around.
+    if (isEmergency(this.kind)) return false;
     if (tick < this.rerouteCooldownUntil || this.route.length < 3) return false;
 
     // Roads still worth avoiding from an earlier decision, so a diversion is
@@ -1198,7 +1432,7 @@ export class EmergencyCorridorManager {
       }
 
       for (const v of allVehicles) {
-        if (v.kind === "ambulance") continue;
+        if (isEmergency(v.kind)) continue;
         if (v.currentSegmentId && corridorSegments.has(v.currentSegmentId)) {
           const seconds = eta.get(v.nextNode ?? "") ?? 0;
           v.yieldInstruction = {
@@ -1210,7 +1444,7 @@ export class EmergencyCorridorManager {
     }
 
     for (const v of allVehicles)
-      if (v.kind !== "ambulance" && !(v.currentSegmentId && corridorSegments.has(v.currentSegmentId)))
+      if (!isEmergency(v.kind) && !(v.currentSegmentId && corridorSegments.has(v.currentSegmentId)))
         v.yieldInstruction = null;
   }
 }

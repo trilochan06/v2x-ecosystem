@@ -63,6 +63,13 @@ function build(seed: number): SimulationEngine {
     seed,
     // Random hazards would interrupt the story being told.
     autoHazards: false,
+    // Cars only, for the same reason. Each beat needs particular vehicles to
+    // do particular things — see the crash, warn the traffic behind, witness
+    // it independently — and an unequipped cyclist can do none of them. In a
+    // mixed fleet whether a beat lands comes down to who happened to be on
+    // that road: honest traffic, and a poor scripted demonstration. The live
+    // city on the Control Center and Street View runs the real mix.
+    homogeneousFleet: true,
     inferenceInterval: 2,
     explainPredictions: true,
   });

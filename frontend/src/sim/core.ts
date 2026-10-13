@@ -32,13 +32,18 @@ export function makeRng(seed: number) {
 export type Rng = ReturnType<typeof makeRng>;
 
 /**
- * How many vehicles on one 250 m segment count as a jam.
+ * How much traffic on one 250 m segment counts as a jam, in passenger-car
+ * units.
  *
  * Deliberately small. A real 250 m lane holds far more, but this simulation
  * runs tens of vehicles over sixty segments, not hundreds — at a realistic jam
  * density nothing would ever be congested and there would be no congestion
  * story to measure. Four is the number at which a road here is saturated, and
  * every occupancy figure on the site is relative to it.
+ *
+ * The unit is car-equivalents rather than a headcount, because the fleet is
+ * mixed: a bus occupies the road a bus occupies, and twenty bicycles are not
+ * twenty cars. See VEHICLE_PROFILES in `agents.ts` for the per-kind factors.
  */
 export const JAM_VEHICLES_PER_SEGMENT = 4;
 
@@ -584,6 +589,11 @@ export const HAZARD_CAUSE_CODES: Record<string, [number, number]> = {
   fog_bank: [CAUSE_CODE.ADVERSE_WEATHER_VISIBILITY, 1], // fog
   // humanPresenceOnTheRoad; a crossing adult is subcause 0 in the CDD.
   pedestrian_crossing: [CAUSE_CODE.HUMAN_PRESENCE_ON_THE_ROAD, 0],
+  // The CDD files unprotected road users sharing the carriageway under the
+  // same cause with their own subcauses, which is what lets a single CPM say
+  // *what* is in the lane rather than only that something is.
+  cyclist_on_roadway: [CAUSE_CODE.HUMAN_PRESENCE_ON_THE_ROAD, 2],
+  motorcyclist_on_roadway: [CAUSE_CODE.HUMAN_PRESENCE_ON_THE_ROAD, 3],
 };
 
 export function causeFor(hazardType: string): [number, number] {

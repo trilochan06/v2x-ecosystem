@@ -1379,3 +1379,77 @@ button.layer.open { border-color: var(--accent); background: #13243a; }
 .tick-order { margin: 0; padding-left: 20px; font-size: 0.85rem; color: var(--text-2); }
 .tick-order li { margin-bottom: 3px; }
 .tick-order strong { color: var(--text); }
+
+/* ------------------------------------------------- fleet legend & picker */
+.fleet-legend__group {
+  margin-top: 0.85rem;
+}
+
+.fleet-legend__group h3 {
+  margin: 0 0 0.4rem;
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted, #6b7687);
+}
+
+.fleet-legend ul {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(135px, 1fr));
+  gap: 0.3rem 0.75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fleet-legend__item {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.82rem;
+  min-width: 0;
+}
+
+.fleet-legend__item--wide {
+  grid-column: 1 / -1;
+}
+
+.fleet-legend__item svg {
+  flex: 0 0 auto;
+}
+
+.fleet-legend__item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fleet-legend__tag {
+  flex: 0 0 auto;
+  font-size: 0.62rem;
+  font-style: normal;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0.05rem 0.3rem;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+  opacity: 0.65;
+}
+
+.spawn-picker {
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.3rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid var(--border, #d6dbe3);
+  background: var(--panel, #fff);
+  color: inherit;
+  cursor: pointer;
+  max-width: 100%;
+}
+
+.spawn-picker:disabled {
+  opacity: 0.55;
+  cursor: default;
+}

@@ -31,6 +31,10 @@ function play(scenario: Scenario, seed: number): (number | null)[] {
     numRsus: GUIDED_RSU_COUNT,
     numVehicles: GUIDED_VEHICLE_COUNT,
     autoHazards: false,
+    // Matches guidedRuntime's `build`. The stories are played to an audience
+    // on a car fleet; testing them on a different one would not be testing
+    // what ships.
+    homogeneousFleet: true,
   });
   for (let i = 0; i < WARM_UP_TICKS; i++) engine.step();
 

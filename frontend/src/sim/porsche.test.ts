@@ -19,8 +19,21 @@ import { CAUSE_CODE, MESSAGE_SPECS, causeFor } from "./core";
 import { TrafficLight } from "./agents";
 import { SimulationEngine } from "./engine";
 
+// Cars only. Every case below is about one prototype mechanism — a brake
+// warning, a perception share, a signal advisory — and none of them is about
+// what else is on the road. Eight road users on a 4x4 grid is a small enough
+// scene that a realistic mix would leave it to chance whether the right two
+// vehicles ever meet, making these tests flaky rather than strict. The mixed
+// fleet has its own suite.
 const scene = (seed = 4, numVehicles = 8) =>
-  new SimulationEngine({ seed, gridSize: 4, numRsus: 4, numVehicles, autoHazards: false });
+  new SimulationEngine({
+    seed,
+    gridSize: 4,
+    numRsus: 4,
+    numVehicles,
+    autoHazards: false,
+    homogeneousFleet: true,
+  });
 
 const run = (engine: SimulationEngine, ticks: number) => {
   for (let i = 0; i < ticks; i++) engine.step();
@@ -214,8 +227,17 @@ describe("traffic light interaction", () => {
 
 // ---------------------------------------------------------- collisions
 describe("collisions", () => {
+  // Cars only, for the same reason as `scene` above: these cases are about
+  // what happens after a collision, not about who was in it.
   const city = (seed = 4, numVehicles = 8) =>
-    new SimulationEngine({ seed, gridSize: 4, numRsus: 9, numVehicles, autoHazards: false });
+    new SimulationEngine({
+      seed,
+      gridSize: 4,
+      numRsus: 9,
+      numVehicles,
+      autoHazards: false,
+      homogeneousFleet: true,
+    });
 
   it("immobilises both vehicles and blocks the lane", () => {
     const e = run(city(), 10);

@@ -12,8 +12,10 @@ import {
   DEFAULT_LAYERS,
   MAP,
   MIN_ZOOM,
+  UNEQUIPPED_KINDS,
   clampView,
   screenFraction,
+  styleFor,
   trafficColor,
   trafficWord,
   viewBoxOf,
@@ -730,14 +732,12 @@ function VehicleIcon({
   const px = PAD + v.x * CELL;
   const py = PAD + v.y * CELL;
   const heading = headingDegrees(v.node, v.next_node);
+  const style = styleFor(v.kind);
   const isAmbulance = v.kind === "ambulance";
-  const color = v.crashed
-    ? MAP.wreck
-    : isAmbulance
-      ? MAP.ambulance
-      : v.kind === "malicious"
-        ? MAP.attacker
-        : MAP.vehicle;
+  const color = v.crashed ? MAP.wreck : style.color;
+  // Drawn at the road space it occupies, so a bus reads as a bus. Clamped so
+  // a bicycle stays clickable and a fire engine does not swamp the junction.
+  const sx = Math.max(0.68, Math.min(1.5, style.scale));
 
   return (
     <g
@@ -763,10 +763,10 @@ function VehicleIcon({
         filter="url(#pinShadow)"
       >
         <rect
-          x={-10}
-          y={-5.5}
-          width={20}
-          height={11}
+          x={-10 * sx}
+          y={-5.5 * Math.min(sx, 1.18)}
+          width={20 * sx}
+          height={11 * Math.min(sx, 1.18)}
           rx={3.5}
           fill={color}
           stroke="#FFFFFF"
@@ -775,7 +775,22 @@ function VehicleIcon({
           transform={v.crashed ? "rotate(30)" : undefined}
         />
         {/* A nose flash, so which way it is pointing reads at a glance. */}
-        {!v.crashed && <rect x={5} y={-3.5} width={3.5} height={7} rx={1.4} fill="#FFFFFF" opacity={0.8} />}
+        {!v.crashed && (
+          <rect
+            x={5 * sx}
+            y={-3.5 * Math.min(sx, 1.18)}
+            width={3.5}
+            height={7 * Math.min(sx, 1.18)}
+            rx={1.4}
+            fill="#FFFFFF"
+            opacity={0.8}
+          />
+        )}
+        {/* An unequipped user has no radio at all, so it is drawn hollow:
+            present on the road, absent from the network. */}
+        {UNEQUIPPED_KINDS.has(v.kind) && !v.crashed && (
+          <circle r={2.1} fill="#FFFFFF" opacity={0.92} />
+        )}
         {isAmbulance && !v.crashed && (
           <>
             <rect x={-1.2} y={-3.4} width={2.4} height={6.8} fill="#FFFFFF" />
@@ -784,7 +799,8 @@ function VehicleIcon({
         )}
       </g>
       <title>
-        {v.id} · {v.kind}
+        {v.id} · {style.label}
+        {UNEQUIPPED_KINDS.has(v.kind) ? " · no on-board unit; seen only by other vehicles" : ""}
         {v.crashed
           ? " · wrecked, waiting for recovery"
           : v.parked

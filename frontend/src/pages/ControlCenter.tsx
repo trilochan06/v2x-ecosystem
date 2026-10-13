@@ -2,7 +2,10 @@ import { useState } from "react";
 import { DENSITIES, commands, switchArchitecture, useSimulation } from "../sim/runtime";
 import { CONFIGS } from "../sim/engine";
 import { CityMap } from "../components/CityMap";
-import { DEFAULT_LAYERS, LAYER_LABELS } from "../components/map/mapStyle";
+import { DEFAULT_LAYERS, LAYER_LABELS, UNEQUIPPED_KINDS, VEHICLE_STYLE } from "../components/map/mapStyle";
+import { FleetLegend } from "../components/FleetLegend";
+import { isEmergency } from "../sim/agents";
+import type { VehicleKind } from "../sim/agents";
 import type { MapLayers } from "../components/map/mapStyle";
 import { ExplainPanel } from "../components/ExplainPanel";
 import { EventLog } from "../components/EventLog";
@@ -57,19 +60,18 @@ export function ControlCenter() {
     );
   };
 
-  const onSpawn = (kind: "car" | "ambulance" | "malicious") => {
-    const id =
-      kind === "car"
-        ? commands.spawnVehicle()
-        : kind === "ambulance"
-          ? commands.spawnAmbulance()
-          : commands.spawnMalicious();
-    const blurb = {
-      car: `Vehicle ${id} joined the network.`,
-      ambulance: `Ambulance ${id} dispatched — it will request priority at each signal ahead.`,
-      malicious: `Attacker ${id} joined — watch its trust fall on the Security page.`,
-    }[kind];
-    push(blurb, kind === "malicious" ? "bad" : kind === "ambulance" ? "good" : "info");
+  const onSpawn = (kind: VehicleKind) => {
+    const id = commands.spawnVehicle(kind);
+    const label = VEHICLE_STYLE[kind]?.label ?? "Vehicle";
+    const blurb =
+      kind === "malicious"
+        ? `Attacker ${id} joined — watch its trust fall on the Security page.`
+        : isEmergency(kind)
+          ? `${label} ${id} dispatched — it will request priority at each signal ahead.`
+          : UNEQUIPPED_KINDS.has(kind)
+            ? `${label} ${id} joined the traffic. It has no on-board unit, so the network will only know where it is when another vehicle sees it.`
+            : `${label} ${id} joined the network.`;
+    push(blurb, kind === "malicious" ? "bad" : isEmergency(kind) ? "good" : "info");
   };
 
   const onToggleCloud = () => {
@@ -228,8 +230,27 @@ export function ControlCenter() {
               <button disabled={busy} onClick={onInjectHazard}>Inject road hazard</button>
               <button disabled={busy} onClick={onPedestrian}>Pedestrian on a crossing</button>
               <button disabled={busy} onClick={() => onSpawn("ambulance")}>Dispatch ambulance</button>
+              <button disabled={busy} onClick={() => onSpawn("fire")}>Dispatch fire</button>
+              <button disabled={busy} onClick={() => onSpawn("police")}>Dispatch police</button>
               <button disabled={busy} onClick={() => onSpawn("malicious")}>Inject attacker</button>
-              <button disabled={busy} onClick={() => onSpawn("car")}>Add vehicle</button>
+              <select
+                className="spawn-picker"
+                disabled={busy}
+                value=""
+                aria-label="Add a road user"
+                onChange={(e) => {
+                  if (e.target.value) onSpawn(e.target.value as VehicleKind);
+                }}
+              >
+                <option value="">Add road user…</option>
+                {(["car", "rickshaw", "motorbike", "bicycle", "bus", "truck"] as VehicleKind[]).map(
+                  (kind) => (
+                    <option key={kind} value={kind}>
+                      {VEHICLE_STYLE[kind].label}
+                    </option>
+                  ),
+                )}
+              </select>
               <button
                 disabled={busy}
                 className={state.cloud_online ? "" : "danger"}
@@ -263,6 +284,7 @@ export function ControlCenter() {
             }}
           />
           <FogPanel state={state} />
+          <FleetLegend />
 
           <div className="panel">
             <h2>Digital twin (M8)</h2>

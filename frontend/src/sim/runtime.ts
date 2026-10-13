@@ -7,6 +7,7 @@
  */
 import { useEffect, useState } from "react";
 import { CONFIGS, SimulationEngine } from "./engine";
+import type { VehicleKind } from "./agents";
 import type { SimulationState } from "../types";
 
 export const TICK_INTERVAL_MS = 800;
@@ -172,8 +173,10 @@ export function useSimulation() {
  * the map on it.
  */
 export const commands = {
-  spawnVehicle: () => {
-    const v = engine.spawnVehicle("car");
+  /** Put one road user on the map. Defaults to a car so existing callers are
+   *  unchanged; any kind in the fleet can be asked for by name. */
+  spawnVehicle: (kind: VehicleKind = "car") => {
+    const v = engine.spawnVehicle(kind);
     publish();
     return v.id;
   },

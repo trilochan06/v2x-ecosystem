@@ -11,6 +11,10 @@ import {
   TrafficLight,
   Vehicle,
   VehicleKind,
+  VEHICLE_PROFILES,
+  TRAFFIC_MIX,
+  isOrdinaryTraffic,
+  isEmergency,
   CRASH_LANE_BLOCKAGE,
   buildFogClusters,
 } from "./agents";
@@ -306,6 +310,18 @@ export interface EngineOptions {
   autoHazards?: boolean;
   inferenceInterval?: number;
   explainPredictions?: boolean;
+  /**
+   * Fill the city with cars only, instead of the realistic mix.
+   *
+   * For tests of a specific V2X mechanism rather than of traffic itself. A
+   * mixed fleet is the honest default, but it makes a small scene a lottery:
+   * with eight road users and a sixth of them unequipped, whether any two
+   * equipped vehicles meet on one road is chance, and a test of collision
+   * reporting that silently depends on that is a flaky test, not a strict
+   * one. Scenes that care about the mix ask for it; scenes that do not pin
+   * it and test the thing they are named after.
+   */
+  homogeneousFleet?: boolean;
 }
 
 export class SimulationEngine {
@@ -378,6 +394,7 @@ export class SimulationEngine {
   private readonly autoHazards: boolean;
   private readonly inferenceInterval: number;
   private readonly explainPredictions: boolean;
+  private readonly homogeneousFleet: boolean;
 
   constructor(opts: EngineOptions = {}) {
     const gridSize = opts.gridSize ?? 6;
@@ -386,6 +403,7 @@ export class SimulationEngine {
     this.autoHazards = opts.autoHazards ?? true;
     this.inferenceInterval = opts.inferenceInterval ?? 1;
     this.explainPredictions = opts.explainPredictions ?? true;
+    this.homogeneousFleet = opts.homogeneousFleet ?? false;
 
     this.rng = makeRng(opts.seed ?? 4242);
     this.grid = new CityGrid(gridSize);
@@ -411,7 +429,7 @@ export class SimulationEngine {
       coords.set(id, [x, y]);
     }
     for (const fog of buildFogClusters([...this.rsus.keys()], coords)) this.fogNodes.set(fog.id, fog);
-    for (let i = 0; i < numVehicles; i++) this.spawnVehicle("car");
+    for (let i = 0; i < numVehicles; i++) this.spawnVehicle(this.pickTrafficKind());
 
     this.log(
       "system_start",
@@ -432,10 +450,30 @@ export class SimulationEngine {
     return out.slice(0, count);
   }
 
+  /** Draw a kind of ordinary road user, in the proportions a city has them.
+   *  Ambulances are dispatched and attackers injected, so neither is here. */
+  private pickTrafficKind(): VehicleKind {
+    if (this.homogeneousFleet) return "car";
+    let roll = this.rng.next() * TRAFFIC_MIX.reduce((sum, m) => sum + m.share, 0);
+    for (const entry of TRAFFIC_MIX) {
+      roll -= entry.share;
+      if (roll <= 0) return entry.kind;
+    }
+    return "car";
+  }
+
   spawnVehicle(kind: VehicleKind = "car", at?: string): Vehicle {
     const node = at ?? this.rng.pick([...this.grid.nodes.keys()]);
     const id = `${kind}-${this.vehicleCounter++}`;
-    const v = new Vehicle(id, kind, this.grid, node, kind === "ambulance" ? 55 : 42, this.rng, this.tick);
+    const v = new Vehicle(
+      id,
+      kind,
+      this.grid,
+      node,
+      VEHICLE_PROFILES[kind].speedKmh,
+      this.rng,
+      this.tick,
+    );
     v.intentCoordination = Boolean(this.config.intent_coordination);
     v.pseudonym = this.authority.enroll(id, this.tick).pseudonym;
     this.vehicles.set(id, v);
@@ -521,7 +559,12 @@ export class SimulationEngine {
     const eligible = new Map<string, Vehicle[]>();
     for (const vehicle of this.vehicles.values()) {
       const segId = vehicle.currentSegmentId;
-      if (!segId || vehicle.crashed || vehicle.kind === "ambulance") continue;
+      // Unequipped users are excluded, not because a cyclist cannot be hit —
+      // that is the likeliest collision on these roads — but because this is
+      // the operator deliberately staging an incident to watch the network
+      // handle, and a crash nobody can announce has no network story to tell.
+      // Spontaneous collisions are free to involve anyone.
+      if (!segId || vehicle.crashed || isEmergency(vehicle.kind) || !vehicle.equipped) continue;
       if (segmentId && segId !== segmentId) continue;
       if (!eligible.has(segId)) eligible.set(segId, []);
       eligible.get(segId)!.push(vehicle);
@@ -636,11 +679,13 @@ export class SimulationEngine {
           "its certificate stops being used because the station is gone, not because it was distrusted",
         ],
         "recovery takes a fixed time to reach a wreck; the wreck leaves on a truck and does not rejoin traffic",
-        vehicle.kind === "car"
+        isOrdinaryTraffic(vehicle.kind)
           ? "a different vehicle enters the city elsewhere, so traffic density holds steady"
           : "the city is one vehicle lighter",
       );
-      if (vehicle.kind === "car") this.spawnVehicle("car");
+      // Replaced like for like, so recovering a bus does not quietly turn the
+      // fleet into cars over a long run.
+      if (isOrdinaryTraffic(vehicle.kind)) this.spawnVehicle(vehicle.kind);
     }
   }
 
@@ -683,15 +728,15 @@ export class SimulationEngine {
   }
 
   /**
-   * Take a car off the road.
+   * Take one road user off the road.
    *
    * Density is something the viewer needs to be able to dial: a map with
-   * twenty-six dots on it measures well and reads badly. Ordinary cars go
-   * first — removing the ambulance somebody just dispatched, or the attacker
-   * they are watching, would be its own kind of confusing.
+   * twenty-six dots on it measures well and reads badly. Ordinary traffic
+   * goes first — removing the ambulance somebody just dispatched, or the
+   * attacker they are watching, would be its own kind of confusing.
    */
   despawnVehicle(): string | null {
-    const ordinary = [...this.vehicles.values()].filter((v) => v.kind === "car");
+    const ordinary = [...this.vehicles.values()].filter((v) => isOrdinaryTraffic(v.kind));
     const pool = ordinary.length ? ordinary : [...this.vehicles.values()];
     const victim = pool[pool.length - 1];
     if (!victim) return null;
@@ -701,10 +746,10 @@ export class SimulationEngine {
     return victim.id;
   }
 
-  /** Add or remove ordinary cars until the city holds `target` vehicles. */
+  /** Add or remove ordinary traffic until the city holds `target` users. */
   setVehicleCount(target: number) {
     const wanted = Math.max(1, Math.round(target));
-    while (this.vehicles.size < wanted) this.spawnVehicle("car");
+    while (this.vehicles.size < wanted) this.spawnVehicle(this.pickTrafficKind());
     while (this.vehicles.size > wanted && this.despawnVehicle()) {
       /* despawnVehicle returns null when there is nothing left to remove */
     }
@@ -921,10 +966,20 @@ export class SimulationEngine {
           const peer = this.vehicles.get(nodeIdent);
           if (peer) {
             const segmentId = String(msg.payload.segment_id);
-            const blind = !peer.knowsPedestrianOn(segmentId, this.tick);
-            peer.receivePerceivedObject(segmentId, this.tick);
-            if (blind && peer.pedestrianKnownOnlyFromPeers(segmentId, this.tick))
-              this.perceptionStats.warnedBlind += 1;
+            // The subcause says what was seen. A crossing pedestrian and a
+            // cyclist travelling the lane are both humanPresenceOnTheRoad,
+            // and a receiver that ignored the distinction would brake for a
+            // crossing that is not there.
+            const isVru = Number(msg.payload.sub_cause_code) !== 0;
+            const blind = isVru
+              ? !peer.knowsVruOn(segmentId, this.tick)
+              : !peer.knowsPedestrianOn(segmentId, this.tick);
+            if (isVru) peer.receivePerceivedVru(segmentId, this.tick);
+            else peer.receivePerceivedObject(segmentId, this.tick);
+            const nowKnows = isVru
+              ? peer.vruKnownOnlyFromPeers(segmentId, this.tick)
+              : peer.pedestrianKnownOnlyFromPeers(segmentId, this.tick);
+            if (blind && nowKnows) this.perceptionStats.warnedBlind += 1;
           }
         } else if (msg.type === "mcm") {
           // A peer said where it is going. This is the only channel that makes
@@ -1148,7 +1203,7 @@ export class SimulationEngine {
 
     for (const light of this.trafficLights.values()) light.step(this.tick);
 
-    const ambulances = [...this.vehicles.values()].filter((v) => v.kind === "ambulance");
+    const ambulances = [...this.vehicles.values()].filter((v) => isEmergency(v.kind));
     if (this.config.v2v_enabled) this.broadcastSpat();
 
     if (ambulances.length && this.config.emergency_corridor && serviceUp) {
@@ -1347,6 +1402,39 @@ export class SimulationEngine {
       const here = vehicle.currentSegmentId;
       if (here && vehicle.seenPedestrians.has(here)) vehicle.brakeHard();
     }
+
+    this.vruPerception();
+  }
+
+  /**
+   * Work out who can see the unprotected road users who cannot announce
+   * themselves.
+   *
+   * Only unequipped users are tracked here. A motorbike is vulnerable too,
+   * but it sends its own CAMs, so everything around it already knows where it
+   * is; a cyclist sends nothing at all. The asymmetry is the point — remove
+   * collective perception and the cyclist becomes invisible to every vehicle
+   * that is not already alongside, which is exactly the situation the
+   * mechanism exists to prevent.
+   *
+   * Line of sight uses the same rule as pedestrians: you can see what is on
+   * the road you are on, and not around the corner you are about to turn.
+   */
+  private vruPerception() {
+    const unequippedBySegment = new Map<string, number>();
+    for (const v of this.vehicles.values()) {
+      if (v.equipped || !v.vulnerable) continue;
+      const segId = v.currentSegmentId;
+      if (!segId) continue;
+      unequippedBySegment.set(segId, (unequippedBySegment.get(segId) ?? 0) + 1);
+    }
+
+    for (const vehicle of this.vehicles.values()) {
+      if (!vehicle.equipped) continue;
+      const here = vehicle.currentSegmentId;
+      vehicle.seenVrus =
+        here && unequippedBySegment.has(here) ? new Map([[here, this.tick]]) : new Map();
+    }
   }
 
   /**
@@ -1371,7 +1459,7 @@ export class SimulationEngine {
     this.replayGuard.prune(this.tick);
   }
 
-  /** Count what is on each road and set occupancy from it — see
+  /** Measure what is on each road and set occupancy from it — see
    *  `CityGrid.setOccupancy` for why this replaced an accumulator. */
   private recomputeOccupancy() {
     const counts = new Map<string, number>();
@@ -1379,7 +1467,12 @@ export class SimulationEngine {
     for (const v of this.vehicles.values()) {
       const segId = v.currentSegmentId;
       if (!segId) continue;
-      counts.set(segId, (counts.get(segId) ?? 0) + 1);
+      // Passenger-car units, not a headcount. A bus takes the road a bus
+      // takes, and five bicycles do not fill a lane the way five cars do.
+      // With a mixed fleet a headcount would call a cycle route congested and
+      // a bus corridor clear; since occupancy feeds the congestion model,
+      // both errors would be learned rather than noticed.
+      counts.set(segId, (counts.get(segId) ?? 0) + v.pcu);
       // A wreck is not traffic; it is an obstruction, and it takes a share of
       // the lane on top of whatever is queued behind it.
       if (v.crashed) blocked.set(segId, (blocked.get(segId) ?? 0) + CRASH_LANE_BLOCKAGE);
