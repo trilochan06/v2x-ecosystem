@@ -225,6 +225,10 @@ export class Segment {
     readonly a: string,
     readonly b: string,
     readonly lengthM = 250,
+    /** Posted limit. Flat across the city, matching the Python engine's 45,
+     *  so the two stay numerically identical; school zones are an advisory
+     *  drawn from land use rather than a different limit. */
+    readonly speedLimitKmh = 45,
   ) {}
 
   record() {

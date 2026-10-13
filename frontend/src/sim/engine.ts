@@ -1,6 +1,8 @@
 /** Metrics, architecture configs, and the tick orchestration.
  *  Ported from `backend/app/metrics.py`, `config.py`, `simulation/engine.py`. */
 import { CongestionPredictor, FederatedCoordinator } from "./ai";
+import { buildPov } from "./pov";
+import type { PovState } from "./pov";
 import {
   AlertEngine,
   DigitalTwin,
@@ -1457,6 +1459,22 @@ export class SimulationEngine {
     }
     this.recomputeOccupancy();
     this.replayGuard.prune(this.tick);
+  }
+
+  /**
+   * Assemble the driver's-eye view for one vehicle.
+   *
+   * Lives on the engine because it needs the whole city — the traffic around
+   * the vehicle, the phase of the signal it is approaching — but it reads
+   * state and writes none, so calling it never changes the simulation.
+   */
+  pov(vehicleId: string): PovState | null {
+    const vehicle = this.vehicles.get(vehicleId);
+    if (!vehicle) return null;
+    return buildPov(vehicle, this.grid, this.tick, this.vehicles.values(), (node) => {
+      const light = this.trafficLights.get(node);
+      return light ? light.phase : null;
+    });
   }
 
   /** Measure what is on each road and set occupancy from it — see

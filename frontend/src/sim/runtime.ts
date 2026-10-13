@@ -190,6 +190,9 @@ export const commands = {
     publish();
     return v.id;
   },
+  /** The driver's view for one vehicle, or null if it has left the city.
+   *  Read-only: polling this never advances or disturbs the simulation. */
+  pov: (vehicleId: string) => engine.pov(vehicleId),
   injectHazard: () => {
     const segmentId = engine.injectHazard();
     publish();

@@ -268,6 +268,12 @@ export class Vehicle {
   tripPurpose = "";
   /** Ticks left parked at the end of a trip. */
   dwellTicks = 0;
+  /** Speed actually driven last tick, after congestion, hazards, yielding and
+   *  GLOSA have all had their say. Kept because a head-up display has to show
+   *  the speed the vehicle is doing, not the speed it would do on an empty
+   *  road, and recomputing it outside `step` would duplicate that whole
+   *  chain of decisions. */
+  lastSpeedKmh = 0;
   /** Roads this vehicle decided to avoid, and until when. Kept so a diversion
    *  is a decision that holds rather than one it reverses next tick. */
   private avoiding = new Map<string, number>();
@@ -398,6 +404,7 @@ export class Vehicle {
     // the air — a stationary car filling the channel with CAMs would be both
     // wrong and the loudest thing on the map.
     if (this.dwellTicks > 0) {
+      this.lastSpeedKmh = 0;
       this.dwellTicks -= 1;
       if (this.dwellTicks === 0) this.pickNewDestination(tick);
       return { outbound, rerouted, completedTrip };
@@ -412,6 +419,7 @@ export class Vehicle {
     // announcing itself until recovery lifts it out — which is what gives the
     // traffic behind time to be warned and rerouted.
     if (this.crashed) {
+      this.lastSpeedKmh = 0;
       this.recoveryTicks = Math.max(0, this.recoveryTicks - 1);
       this.glosaAdvice = null;
       // A wrecked bicycle is still an obstruction in the lane, and still
@@ -454,6 +462,7 @@ export class Vehicle {
     this.glosaAdvice = this.glosaAdviceFor(nxt, tick, speed);
     if (this.glosaAdvice !== null) speed = Math.min(speed, this.glosaAdvice);
 
+    this.lastSpeedKmh = speed;
     this.progress += ((speed * 1000) / 3600) / seg.lengthM;
     if (this.progress >= 1) {
       this.node = nxt;

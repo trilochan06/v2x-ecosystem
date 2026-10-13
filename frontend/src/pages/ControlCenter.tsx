@@ -4,6 +4,7 @@ import { CONFIGS } from "../sim/engine";
 import { CityMap } from "../components/CityMap";
 import { DEFAULT_LAYERS, LAYER_LABELS, UNEQUIPPED_KINDS, VEHICLE_STYLE } from "../components/map/mapStyle";
 import { FleetLegend } from "../components/FleetLegend";
+import { PovView } from "../components/PovView";
 import { isEmergency } from "../sim/agents";
 import type { VehicleKind } from "../sim/agents";
 import type { MapLayers } from "../components/map/mapStyle";
@@ -22,6 +23,11 @@ export function ControlCenter() {
    *  does *it* know and why did it last change its mind — so the two
    *  selections are separate and picking one clears the other. */
   const [selectedVehicle, setSelectedVehicle] = useState<string | null>(null);
+  const [povMode, setPovMode] = useState(false);
+  const [povSound, setPovSound] = useState(false);
+  // Recomputed every publish, which is what keeps the HUD live. `pov` only
+  // reads simulation state, so calling it on each render is free of effects.
+  const pov = povMode && selectedVehicle ? commands.pov(selectedVehicle) : null;
   /** Which overlays are drawn. Every one is something a viewer might
    *  reasonably want out of the way while they look at something else. */
   const [layers, setLayers] = useState<MapLayers>(DEFAULT_LAYERS);
@@ -201,13 +207,13 @@ export function ControlCenter() {
             onSelectVehicle={(id) => {
               setSelectedVehicle(id);
               if (id) setSelectedSegment(null);
+              // Selecting someone else drops you out of the old vehicle's
+              // cabin rather than silently showing another one's instruments.
+              if (!id || id !== selectedVehicle) setPovMode(false);
             }}
             layers={layers}
           />
           <div className="legend">
-            <span><i className="dot" style={{ background: "#3D4A5C" }} /> vehicle</span>
-            <span><i className="dot" style={{ background: "#E14B4B" }} /> ambulance</span>
-            <span><i className="dot" style={{ background: "#9B59D0" }} /> attacker</span>
             <span><i className="line" style={{ background: "#F2B33D" }} /> slowing</span>
             <span><i className="line" style={{ background: "#D64541" }} /> at a standstill</span>
             <span><i className="pin-key" style={{ background: "#D6453D" }} /> incident that is really there</span>
@@ -284,6 +290,27 @@ export function ControlCenter() {
             }}
           />
           <FogPanel state={state} />
+          {pov ? (
+            <PovView
+              pov={pov}
+              onExit={() => setPovMode(false)}
+              sound={povSound}
+              onToggleSound={() => setPovSound((on) => !on)}
+            />
+          ) : (
+            selectedVehicle && (
+              <div className="panel pov-invite">
+                <h2>Ride along</h2>
+                <p className="muted small">
+                  See the road from {selectedVehicle} — its speed, its route, and every warning it
+                  is actually receiving.
+                </p>
+                <button type="button" onClick={() => setPovMode(true)}>
+                  Enter vehicle view
+                </button>
+              </div>
+            )
+          )}
           <FleetLegend />
 
           <div className="panel">

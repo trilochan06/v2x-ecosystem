@@ -1453,3 +1453,274 @@ button.layer.open { border-color: var(--accent); background: #13243a; }
   opacity: 0.55;
   cursor: default;
 }
+
+/* --------------------------------------------------------- vehicle POV */
+.pov__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.pov__head h2 {
+  margin: 0;
+}
+
+.pov__head p {
+  margin: 0.1rem 0 0;
+}
+
+.pov__badge {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  color: #fff;
+  font-size: 0.78rem;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+}
+
+.pov__head-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.pov__head-actions button {
+  font-size: 0.78rem;
+  padding: 0.25rem 0.55rem;
+}
+
+.pov__silent {
+  margin: 0.7rem 0 0;
+  padding: 0.55rem 0.7rem;
+  border-left: 3px solid #2e9b62;
+  background: rgba(46, 155, 98, 0.1);
+  border-radius: 0 5px 5px 0;
+  font-size: 0.84rem;
+}
+
+.pov__hud {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 0.85rem;
+}
+
+.pov-dial__speed {
+  display: flex;
+  align-items: baseline;
+  gap: 0.25rem;
+}
+
+.pov-dial__speed strong {
+  font-size: 2.3rem;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.pov-dial__speed.is-over strong {
+  color: #e14b4b;
+}
+
+.pov-dial__limits {
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+  margin-top: 0.3rem;
+}
+
+.pov-limit {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 2.5px solid #d64541;
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.pov-advisory {
+  font-size: 0.72rem;
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+  opacity: 0.75;
+}
+
+.pov__facts {
+  flex: 1 1 200px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: 0.4rem 0.7rem;
+  margin: 0;
+  min-width: 0;
+}
+
+.pov__facts div {
+  min-width: 0;
+}
+
+.pov__facts dt {
+  font-size: 0.68rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  opacity: 0.6;
+}
+
+.pov__facts dd {
+  margin: 0;
+  font-size: 0.86rem;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.pov-phase--green { color: #34a853; }
+.pov-phase--red { color: #d64541; }
+
+.pov__subhead {
+  margin: 1rem 0 0.4rem;
+  font-size: 0.76rem;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  opacity: 0.65;
+}
+
+.pov__count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 0.25rem;
+  margin-left: 0.3rem;
+  border-radius: 9px;
+  background: #d64541;
+  color: #fff;
+  font-size: 0.66rem;
+}
+
+.pov-alerts,
+.pov-near {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.pov-alert {
+  padding: 0.5rem 0.65rem;
+  border-radius: 6px;
+  border-left: 3px solid currentColor;
+  background: rgba(127, 127, 127, 0.09);
+}
+
+.pov-alert p {
+  margin: 0.2rem 0 0;
+  font-size: 0.83rem;
+  color: inherit;
+}
+
+.pov-alert--critical { color: #d64541; }
+.pov-alert--warning { color: #d98324; }
+.pov-alert--info { color: #2e7d9a; }
+
+.pov-alert__top {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.pov-alert__top strong {
+  color: inherit;
+}
+
+.pov-alert__pri {
+  font-size: 0.6rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0.08rem 0.3rem;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+}
+
+.pov-alert__advice {
+  font-weight: 600;
+}
+
+.pov-alert__explain {
+  margin-top: 0.4rem;
+  font-size: 0.72rem;
+  padding: 0.18rem 0.45rem;
+}
+
+.pov-steps {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.84rem;
+}
+
+.pov-steps li {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  align-items: baseline;
+}
+
+.pov-steps__dist {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+  min-width: 48px;
+}
+
+.pov-near li {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.83rem;
+  /* No wrapping: a row that breaks drops its tags onto a line of their own,
+     which reads as a separate entry rather than as part of this one. The
+     distance text gives up its space first. */
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.pov-near li > span:nth-of-type(2) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pov-near__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex: 0 0 auto;
+}
+
+.pov-near__tag {
+  font-size: 0.6rem;
+  font-style: normal;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0.03rem 0.25rem;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+  opacity: 0.6;
+}
+
+.pov-invite button {
+  margin-top: 0.5rem;
+}
