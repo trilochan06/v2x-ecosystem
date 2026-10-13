@@ -43,7 +43,7 @@ class FogNode:
 
         all_segments = [seg for rsu in members for seg in rsu.local_segments()]
         avg_occ = sum(s.occupancy for s in all_segments) / len(all_segments) if all_segments else 0.0
-        incidents = sum(1 for s in all_segments if s.incident)
+        incidents = sum(1 for s in all_segments if s.reported_incident)
         vehicles_served = sum(
             1 for _vehicle_id, rsu_id in rsu_network.vehicle_cell.items() if rsu_id in self.member_rsu_ids
         )

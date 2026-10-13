@@ -154,8 +154,16 @@ export function CityMap({ state, selectedSegment, onSelectSegment }: Props) {
               <line x1={ax} y1={ay} x2={bx} y2={by} stroke="#e2e8f0" strokeWidth={ROAD_WIDTH + 6} strokeLinecap="round" opacity={0.12} />
             )}
             <line x1={ax} y1={ay} x2={bx} y2={by} stroke="#facc15" strokeWidth={1.5} strokeDasharray="10 10" opacity={0.35} />
-            {seg.incident && (
+            {/* What the network corroborated and is acting on. */}
+            {seg.reported_incident && (
               <line x1={ax} y1={ay} x2={bx} y2={by} stroke="#ef4444" strokeWidth={4} strokeDasharray="4 6" className="incident-pulse" />
+            )}
+            {/* A hazard that is physically there and which nobody has
+                confirmed yet. Drawn faintly so the gap between truth and
+                belief is visible rather than hidden -- this is the recall
+                the detection panel reports. */}
+            {seg.incident && !seg.reported_incident && (
+              <line x1={ax} y1={ay} x2={bx} y2={by} stroke="#fbbf24" strokeWidth={2.5} strokeDasharray="2 8" opacity={0.75} />
             )}
             {isCorridor && (
               <line x1={ax} y1={ay} x2={bx} y2={by} stroke="#38bdf8" strokeWidth={3} strokeDasharray="2 10" className="corridor-pulse" />

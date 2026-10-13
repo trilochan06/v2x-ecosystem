@@ -23,7 +23,13 @@ HAZARD_TYPES = ["fog", "accident", "pothole", "waterlogging", "oil_spill"]
 OCCUPANCY_PING_INTERVAL_TICKS = 4
 OCCUPANCY_PING_TTL_HOPS = 2
 PEER_INFO_STALE_TICKS = 15
-CONGESTION_REROUTE_THRESHOLD = 0.8
+# Fraction of jam density at which a peer-reported segment is worth avoiding.
+# Measured against the density-based occupancy model: 0.8 catches only 13
+# reroutes in 600 ticks, 0.6 catches 38, and 0.5 catches no more than 0.6 --
+# so 0.6 is where the genuinely congested cases are all picked up and the
+# curve flattens. Under the old accumulator model this threshold was tripped
+# permanently, which is why rerouting used to fire 348 times and mean nothing.
+CONGESTION_REROUTE_THRESHOLD = 0.6
 REROUTE_COOLDOWN_TICKS = 25
 REROUTE_LOOKAHEAD_HOPS = 3
 
@@ -90,8 +96,6 @@ class Vehicle:
 
         if nxt is not None:
             seg = self.grid.segment_between(self.node, nxt)
-            bump = 0.05 if self.kind != "ambulance" else 0.02
-            seg.occupancy = min(1.0, seg.occupancy + bump)
 
             effective_speed = self.speed_kmh
             if self.yield_instruction:
@@ -163,8 +167,20 @@ class Vehicle:
         if not avoid:
             return False
 
-        new_route = self.grid.shortest_path_avoiding(self.node, self.destination, frozenset(avoid))
-        if new_route and new_route != self.route:
+        # A vehicle part-way down a road cannot leave it except at a junction,
+        # so the only thing still open to it is what happens *after* the
+        # junction ahead. Replanning from `self.node` while `progress` stays
+        # put would leave the vehicle at the same fraction along a different
+        # segment, which reads on the map as the car teleporting across town.
+        ahead = self.next_node
+        committed = self.progress > 0.0 and ahead is not None
+        origin = ahead if committed else self.node
+        tail = self.grid.shortest_path_avoiding(origin, self.destination, frozenset(avoid))
+        if len(tail) < 2:
+            return False
+        new_route = [self.node, *tail] if committed else tail
+
+        if new_route != self.route:
             self.route = new_route
             self._reroute_cooldown_until = tick + REROUTE_COOLDOWN_TICKS
             self.reroute_count += 1

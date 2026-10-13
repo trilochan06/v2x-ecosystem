@@ -33,7 +33,7 @@ def test_corroborated_reports_keep_trust_high():
 
     assert trust.score("car-a") > 0.8
     assert trust.score("car-b") > 0.8
-    assert grid.segments[seg_id].incident is True
+    assert grid.segments[seg_id].reported_incident is True
 
 
 def test_uncorroborated_fabricator_gets_quarantined():

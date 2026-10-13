@@ -5,6 +5,8 @@ import { StatsBar } from "./components/StatsBar";
 import { ExplainPanel } from "./components/ExplainPanel";
 import { TrustPanel } from "./components/TrustPanel";
 import { FogPanel } from "./components/FogPanel";
+import { TwinPanel } from "./components/TwinPanel";
+import { FederatedPanel } from "./components/FederatedPanel";
 import { ControlConsole } from "./components/ControlConsole";
 import { EventLog } from "./components/EventLog";
 
@@ -36,6 +38,8 @@ export default function App() {
         </section>
         <aside className="side-panels">
           <ExplainPanel state={state} selectedSegment={selectedSegment} />
+          <TwinPanel state={state} />
+          <FederatedPanel state={state} />
           <FogPanel state={state} />
           <TrustPanel state={state} />
           <ControlConsole state={state} />
@@ -65,7 +69,7 @@ function Legend() {
         <i className="line" style={{ background: "#ef4444" }} /> high occupancy
       </span>
       <span>
-        <i className="line dashed" /> active incident / corridor
+        <i className="line dashed" /> confirmed incident / corridor
       </span>
       <span>
         <i className="dot" style={{ background: "#38bdf8" }} /> RSU tower
@@ -75,6 +79,9 @@ function Legend() {
       </span>
       <span>
         <i className="dot" style={{ background: "#a3e635" }} /> vehicle just rerouted (V2V)
+      </span>
+      <span>
+        <i className="line" style={{ background: "#fbbf24" }} /> real hazard the network has not confirmed
       </span>
     </div>
   );

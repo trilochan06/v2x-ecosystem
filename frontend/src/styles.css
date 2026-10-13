@@ -358,3 +358,93 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 }
+
+/* --- digital twin panel ------------------------------------------------ */
+.twin-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin: 10px 0;
+}
+.twin-grid > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 6px;
+  background: #121a2b;
+  border: 1px solid #1f2a3d;
+  border-radius: 6px;
+}
+.twin-grid.alert > div { border-color: #7c2d12; }
+.twin-figure { font-size: 17px; font-weight: 700; color: #bae6fd; }
+.twin-spark { width: 100%; height: 34px; margin: 2px 0 8px; }
+.twin-alert {
+  margin: 4px 0 0;
+  padding: 7px 9px;
+  font-size: 12px;
+  color: #fed7aa;
+  background: #2a1407;
+  border: 1px solid #7c2d12;
+  border-radius: 6px;
+}
+.twin-subhead,
+.fl-subhead {
+  margin: 14px 0 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #94a3b8;
+}
+.twin-detection {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 12px;
+  margin-top: 4px;
+}
+.twin-detection strong { color: #bae6fd; }
+.twin-anomalies {
+  margin: 4px 0 0;
+  padding-left: 16px;
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+/* --- federated learning panel ------------------------------------------ */
+.fl-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin: 10px 0;
+}
+.fl-grid > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 6px;
+  background: #121a2b;
+  border: 1px solid #1f2a3d;
+  border-radius: 6px;
+}
+.fl-figure { font-size: 17px; font-weight: 700; color: #bae6fd; }
+.fl-chart { width: 100%; height: 56px; margin: 4px 0 2px; }
+.fl-legend { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.fl-excluded {
+  color: #fed7aa;
+  background: #2a1407;
+  border: 1px solid #7c2d12;
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+.fl-clients { display: flex; flex-direction: column; gap: 4px; }
+.fl-client {
+  display: grid;
+  grid-template-columns: 1.1fr 1fr 1fr 1fr;
+  gap: 6px;
+  font-size: 11.5px;
+  padding: 5px 7px;
+  background: #121a2b;
+  border: 1px solid #1f2a3d;
+  border-radius: 5px;
+}
+.fl-client.excluded { border-color: #7c2d12; opacity: 0.75; }

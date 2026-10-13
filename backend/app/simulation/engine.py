@@ -11,6 +11,7 @@ import random
 from dataclasses import dataclass, field
 
 from app.ai.congestion_model import CongestionPredictor
+from app.ai.federated import FederatedCoordinator
 from app.emergency.corridor import EmergencyCorridorManager
 from app.network.corroboration import INCIDENT_DURATION_TICKS, CorroborationEngine
 from app.network.gossip import EtherBus, RecipientHandle
@@ -20,12 +21,19 @@ from app.network.security import TrustRegistry
 from app.simulation.fog import FogNode, build_fog_clusters
 from app.simulation.rsu import RSU
 from app.simulation.traffic_light import TrafficLight
+from app.simulation.twin import TransportDigitalTwin
 from app.simulation.vehicle import Vehicle
 from app.simulation.world import CityGrid, node_id
 
 MAX_EVENTS = 150
 FOG_CLUSTER_SIZE = 3
 FOG_INTERVAL_TICKS = 20
+# Physical hazards arise on their own, not only when an operator injects one.
+# Without this there is nothing real for honest vehicles to report, every
+# corroborated incident is by construction a false positive, and the twin's
+# divergence detector has no unmodelled event to find.
+HAZARD_SPAWN_PROBABILITY = 0.05
+HAZARD_TTL_RANGE = (35, 70)
 
 
 def _new_counter():
@@ -45,6 +53,8 @@ class SimulationEngine:
         self.trust = TrustRegistry()
         self.rsu_network = RSUNetwork()
         self.predictor = CongestionPredictor()
+        self.federated = FederatedCoordinator()
+        self.twin = TransportDigitalTwin()
         self.corridor_mgr = EmergencyCorridorManager(self.grid)
         self.corroboration = CorroborationEngine()
         self.vehicles: dict[str, Vehicle] = {}
@@ -54,6 +64,11 @@ class SimulationEngine:
         self.event_log: list[dict] = []
         self.messages_this_tick = 0
         self.reroutes_this_tick = 0
+        # Detection is scored per hazard episode, not per tick -- see
+        # _score_detection.
+        self._detection = {"true_positives": 0, "false_positives": 0, "false_negatives": 0}
+        self._hazard_open: dict[str, bool] = {}
+        self._belief_open: dict[str, bool] = {}
         self._vehicle_counter = _new_counter()
         self._spawn_initial()
 
@@ -170,12 +185,41 @@ class SimulationEngine:
             if not rsu.alive:
                 continue
             rsu.run_prediction(self.predictor, self.tick)
+            rsu.collect_training_data(
+                self.federated, self.tick, source_trust=self._source_trust(rsu)
+            )
             digest = rsu.build_digest(self.tick, self.rsu_network)
             if digest and digest.incident_count > 0:
                 self._log(
                     "congestion_alert",
                     f"{rsu.id} cloud digest: avg occupancy {digest.avg_occupancy}, {digest.incident_count} incident(s).",
                 )
+
+        if self.federated.should_run(self.tick):
+            summary = self.federated.run_round(self.tick)
+            if summary is not None:
+                saved_kb = summary.raw_bytes_avoided / 1024
+                note = (
+                    f"FL round {summary.round}: {len(summary.participants)} RSUs, "
+                    f"loss {summary.global_loss:.4f}, {saved_kb:.1f} KB of raw telemetry "
+                    "never transmitted."
+                )
+                if summary.excluded:
+                    note += f" Excluded below trust floor: {', '.join(summary.excluded)}."
+                self._log("federated_round", note)
+
+        if self.twin.should_sync(self.tick):
+            was_alert = self.twin.alert
+            self.twin.sync(self.grid, self.tick)
+            if self.twin.alert and not was_alert:
+                self._log(
+                    "twin_divergence",
+                    f"Digital twin diverged from physical state "
+                    f"(mean gap {self.twin.divergence:.3f}, worst segment "
+                    f"{self.twin.max_segment_gap:.3f}) -- replica no longer authoritative.",
+                )
+            elif was_alert and not self.twin.alert:
+                self._log("twin_resynced", "Digital twin divergence back within bounds.")
 
         if self.tick % FOG_INTERVAL_TICKS == 0:
             for fog in self.fog_nodes.values():
@@ -200,17 +244,108 @@ class SimulationEngine:
         if ambulances:
             self.corridor_mgr.step(self.tick, ambulances, list(self.vehicles.values()), self.traffic_lights)
 
+        self._spawn_random_hazard()
+        self._score_detection()
         self._decay_incidents()
-        self.grid.decay_occupancy(factor=0.985)
+        self._recompute_occupancy()
 
         for entry in self.rsu_network.handover_log[-5:]:
             if entry["tick"] == self.tick:
                 self._log("self_heal", f"Vehicle {entry['vehicle_id']} handed over {entry['from']} -> {entry['to']}.")
 
+    def _score_detection(self) -> None:
+        """Score each hazard and each confirmation once, as an episode.
+
+        An instantaneous count of segments in each state is dominated by how
+        many hazards happen to be live at the moment it is read. Counting
+        episodes -- did this hazard ever get confirmed before it expired, was
+        this confirmation ever backed by a real hazard -- is the quantity the
+        precision and recall of a detector actually refer to.
+        """
+        for seg in self.grid.all_segments():
+            real, believed = seg.incident, seg.reported_incident
+
+            if real and seg.id not in self._hazard_open:
+                self._hazard_open[seg.id] = False  # not yet confirmed
+            if real and believed:
+                self._hazard_open[seg.id] = True
+            if not real and seg.id in self._hazard_open:
+                # The hazard has expired: was it ever confirmed?
+                if self._hazard_open.pop(seg.id):
+                    self._detection["true_positives"] += 1
+                else:
+                    self._detection["false_negatives"] += 1
+
+            if believed and seg.id not in self._belief_open:
+                self._belief_open[seg.id] = real
+            elif believed and real:
+                self._belief_open[seg.id] = True
+            if not believed and seg.id in self._belief_open:
+                # A confirmation that never coincided with a real hazard was
+                # a false alarm, whatever the network thought at the time.
+                if not self._belief_open.pop(seg.id):
+                    self._detection["false_positives"] += 1
+
+    def detection_quality(self) -> dict:
+        """Compare what the network believes against what is physically there.
+
+        This is only meaningful because the two are stored separately and no
+        network component can read the physical flag -- see Segment.
+        """
+        tp = self._detection["true_positives"]
+        fp = self._detection["false_positives"]
+        fn = self._detection["false_negatives"]
+        precision = tp / (tp + fp) if (tp + fp) else 1.0
+        recall = tp / (tp + fn) if (tp + fn) else 1.0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
+        return {
+            "true_positives": tp,
+            "false_positives": fp,
+            "false_negatives": fn,
+            "precision": round(precision, 3),
+            "recall": round(recall, 3),
+            "f1": round(f1, 3),
+        }
+
+    def _source_trust(self, rsu: RSU) -> float:
+        """How much this unit's own data sources are believed.
+
+        A unit's picture of its roads is assembled from the vehicles currently
+        in its cell, so the trust of that picture is the mean trust of those
+        vehicles. The registry already maintains these scores for hazard
+        validation; the federated layer just reads them.
+        """
+        members = [
+            vid for vid, cell in self.rsu_network.vehicle_cell.items() if cell == rsu.id
+        ]
+        if not members:
+            return 1.0
+        return sum(self.trust.score(vid) for vid in members) / len(members)
+
     def _recipient_handles(self) -> list[RecipientHandle]:
         handles = [RecipientHandle(node_id=r.id, grid_node=r.node, is_alive=r.alive) for r in self.rsus.values()]
         handles += [RecipientHandle(node_id=v.id, grid_node=v.node, is_alive=True) for v in self.vehicles.values()]
         return handles
+
+    def _recompute_occupancy(self) -> None:
+        """Occupancy is a density over who is on each road right now."""
+        counts: dict[str, int] = {}
+        for v in self.vehicles.values():
+            sid = v.current_segment_id
+            if sid:
+                counts[sid] = counts.get(sid, 0) + 1
+        self.grid.set_occupancy(counts)
+
+    def _spawn_random_hazard(self) -> None:
+        if random.random() >= HAZARD_SPAWN_PROBABILITY:
+            return
+        clear = [s for s in self.grid.all_segments() if not s.incident]
+        if not clear:
+            return
+        seg = random.choice(clear)
+        seg.incident = True
+        seg.incident_ttl = random.randint(*HAZARD_TTL_RANGE)
+        self._log("hazard_appeared", f"Hazard appeared on segment {seg.id}.")
 
     def _decay_incidents(self) -> None:
         for seg in self.grid.all_segments():
@@ -218,6 +353,10 @@ class SimulationEngine:
                 seg.incident_ttl -= 1
                 if seg.incident_ttl <= 0:
                     seg.incident = False
+            if seg.reported_incident:
+                seg.reported_ttl -= 1
+                if seg.reported_ttl <= 0:
+                    seg.reported_incident = False
 
     def mark_incident(self, segment_id: str) -> None:
         seg = self.grid.segments.get(segment_id)
@@ -246,6 +385,7 @@ class SimulationEngine:
                     "b": s.b,
                     "occupancy": round(s.occupancy, 3),
                     "incident": s.incident,
+                    "reported_incident": s.reported_incident,
                 }
                 for s in self.grid.all_segments()
             ],
@@ -256,6 +396,9 @@ class SimulationEngine:
             ],
             "traffic_lights": [t.to_state() for t in self.traffic_lights.values()],
             "trust": self.trust.snapshot(),
+            "federated": self.federated.to_state(),
+            "detection": self.detection_quality(),
+            "digital_twin": self.twin.to_state(self.tick),
             "cloud_digests": [d.__dict__ for d in self.rsu_network.cloud_digests[-20:]],
             "handovers": self.rsu_network.handover_log[-20:],
             "corridor_events": self.corridor_mgr.events[-20:],

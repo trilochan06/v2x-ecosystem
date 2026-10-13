@@ -12,6 +12,16 @@ def node_id(x: int, y: int) -> str:
     return f"{x}-{y}"
 
 
+# Vehicles on one 250 m segment that constitute a jam. Occupancy is the
+# fraction of this, not a running total of everyone who ever drove past.
+JAM_VEHICLES_PER_SEGMENT = 4
+# How quickly occupancy follows what is on the road. Low enough that a
+# segment does not flicker as a car crosses a junction, high enough to keep up.
+OCCUPANCY_SMOOTHING = 0.25
+# A hazard blocks part of the carriageway without itself being traffic.
+INCIDENT_BLOCKAGE = 0.25
+
+
 @dataclass
 class Segment:
     id: str
@@ -20,8 +30,18 @@ class Segment:
     length_m: float
     speed_limit_kmh: float
     occupancy: float = 0.0
+    # Physical truth: a hazard is actually present on this road. Only the
+    # simulator writes this. No RSU, no vehicle and no model may read it --
+    # if they could, detection precision would be a comparison between a
+    # quantity and itself.
     incident: bool = False
     incident_ttl: int = 0
+    # Network belief: the corroboration layer became convinced there is a
+    # hazard here. This is what the infrastructure actually knows, and it can
+    # be wrong in both directions -- a real hazard nobody reported, or a
+    # fabricated one that two colluding reporters got confirmed.
+    reported_incident: bool = False
+    reported_ttl: int = 0
     history: list[float] = field(default_factory=list)
 
     def record(self) -> None:
@@ -130,7 +150,23 @@ class CityGrid:
                     result.append(seg)
         return result
 
-    def decay_occupancy(self, factor: float = 0.9) -> None:
+    def set_occupancy(self, counts: dict[str, int]) -> None:
+        """Recompute occupancy as a density from who is actually on each road.
+
+        The previous model accumulated a fixed bump per vehicle-tick and
+        decayed slowly, which is not a density at all: a single car crossing
+        a segment repeatedly drove it to saturation, so most of the network
+        read as jammed, the congestion model trained on lags pinned near 1.0,
+        and the rerouting threshold was permanently tripped. Occupancy is now
+        vehicles present over the number that constitutes a jam, smoothed
+        between ticks so a car crossing a junction does not make the map
+        flicker.
+        """
         for seg in self.segments.values():
-            seg.occupancy = max(0.0, seg.occupancy * factor)
+            present = counts.get(seg.id, 0)
+            blockage = INCIDENT_BLOCKAGE if seg.incident else 0.0
+            instant = min(1.0, present / JAM_VEHICLES_PER_SEGMENT + blockage)
+            seg.occupancy = seg.occupancy * (1 - OCCUPANCY_SMOOTHING) + instant * OCCUPANCY_SMOOTHING
+            if seg.occupancy < 1e-4:
+                seg.occupancy = 0.0
             seg.record()

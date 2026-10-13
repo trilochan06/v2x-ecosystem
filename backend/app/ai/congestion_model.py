@@ -85,10 +85,20 @@ class CongestionPredictor:
         self.feature_stds = X.std(axis=0) + 1e-6
         self.importances = dict(zip(FEATURE_NAMES, self.model.feature_importances_))
 
-    def predict(self, segment, tick: int, neighbor_avg: float | None = None) -> dict:
+    def predict(
+        self,
+        segment,
+        tick: int,
+        neighbor_avg: float | None = None,
+        incident: bool | None = None,
+    ) -> dict:
         history = segment.history[-3:]
         n_avg = neighbor_avg if neighbor_avg is not None else segment.occupancy
-        feats = build_feature_vector(history, tick, segment.incident, n_avg)
+        # An edge node forecasts from what it believes, so the caller
+        # passes its belief; falling back to the segment's own flag keeps
+        # the offline/benchmark path working unchanged.
+        flag = segment.incident if incident is None else incident
+        feats = build_feature_vector(history, tick, flag, n_avg)
         predicted, contributions = self._predict_with_attribution(feats)
 
         risk = "low"

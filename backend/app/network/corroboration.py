@@ -54,10 +54,15 @@ class CorroborationEngine:
             if corroborated and trust.is_trusted(sender):
                 confirmed_segments.add(seg_id)
 
+        # Corroboration produces a *belief*, not a fact. It is recorded on the
+        # reported_* fields; the physical `incident` flag stays whatever the
+        # world actually is. Keeping the two apart is what lets detection
+        # precision be measured at all, and it is why a confirmed fabrication
+        # shows up as a false positive rather than quietly becoming true.
         for seg_id in confirmed_segments:
             seg = grid.segments.get(seg_id)
             if seg is not None:
-                seg.incident = True
-                seg.incident_ttl = INCIDENT_DURATION_TICKS
+                seg.reported_incident = True
+                seg.reported_ttl = INCIDENT_DURATION_TICKS
 
         return confirmed_segments
