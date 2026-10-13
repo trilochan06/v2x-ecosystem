@@ -39,7 +39,11 @@ class RSUNetwork:
         self.alive[rsu_id] = alive
 
     def nearest_alive_rsu(self, grid, from_node: str) -> str | None:
-        best_id, best_dist = None, None
+        # Annotated rather than inferred from the initial pair: assigning
+        # `None, None` narrows both to None, which makes the comparison
+        # below unreachable as far as the type checker is concerned.
+        best_id: str | None = None
+        best_dist: float | None = None
         for rsu_id, node in self.rsu_positions.items():
             if not self.alive.get(rsu_id, False):
                 continue
