@@ -11,12 +11,29 @@ the other.
 
 `divergence()` quantifies that drift: mean absolute error between the
 twin's belief about each segment's occupancy and the physical truth.
+
+Divergence is a single number for the whole network, which is the right
+figure for comparing architectures but says nothing about *where* the
+replica is wrong, and the two ways it can be wrong have opposite
+operational meanings. A road carrying a hazard nobody corroborated is a
+detection failure -- the network is blind to something real. A road the
+network is convinced about that carries nothing is a false alarm, which
+is what a successful injection attack looks like from the outside. Both
+show up in the mean as the same small number, so `anomalies` classifies
+them per segment instead of leaving them averaged together.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
 from app.simulation.world import CityGrid
+
+#: How far one road's replica occupancy may sit from physical truth before
+#: it is called out individually rather than absorbed into the mean.
+SEGMENT_DRIFT_THRESHOLD = 0.35
+#: Anomalies kept for display. Older ones are dropped, not aggregated,
+#: because the counts are reported separately and never recomputed.
+ANOMALY_HISTORY_LIMIT = 60
 
 
 @dataclass
@@ -27,21 +44,92 @@ class TwinSegment:
 
 
 @dataclass
+class TwinAnomaly:
+    """One road where replica and reality disagree, and in which direction."""
+
+    tick: int
+    segment_id: str
+    #: ``unmodelled_incident`` -- a real hazard the network never confirmed.
+    #: ``phantom_incident``    -- a confirmation with no hazard behind it.
+    #: ``occupancy_drift``     -- the replica's traffic estimate has gone stale.
+    kind: str
+    replica_occupancy: float
+    physical_occupancy: float
+    gap: float
+
+
+@dataclass
 class DigitalTwin:
     grid: CityGrid
     state: dict[str, TwinSegment] = field(default_factory=dict)
     sync_count: int = 0
     last_sync_tick: int = -1
     bytes_synced: int = 0
+    anomalies: list[TwinAnomaly] = field(default_factory=list)
+    anomaly_count: int = 0
+    #: (segment, kind) pairs already reported and not yet resolved. Without
+    #: this a single hazard raises the same anomaly on every sync for as long
+    #: as it lasts, which buries the distinct events in its own repeats.
+    _open: set[tuple[str, str]] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         for seg in self.grid.all_segments():
             self.state[seg.id] = TwinSegment()
 
+    def _classify(self, seg, twin: TwinSegment) -> str | None:
+        """Name the disagreement on one road, or None if there is none.
+
+        Incident mismatches are checked before occupancy because they are
+        the more specific finding: a blocked road also drifts in occupancy,
+        and reporting that instead would describe the symptom rather than
+        the cause.
+        """
+        if seg.hazard_active and not seg.confirmed_incident:
+            return "unmodelled_incident"
+        if seg.confirmed_incident and not seg.hazard_active:
+            return "phantom_incident"
+        if abs(twin.occupancy - seg.occupancy) >= SEGMENT_DRIFT_THRESHOLD:
+            return "occupancy_drift"
+        return None
+
+    def _measure(self, tick: int) -> None:
+        """Compare replica against physical truth, before the sync overwrites
+        the evidence. Nothing here is visible to the network -- the twin is
+        the one component entitled to read ground truth, because measuring
+        its own error is the whole reason it exists."""
+        for seg in self.grid.all_segments():
+            twin = self.state[seg.id]
+            kind = self._classify(seg, twin)
+
+            # Clear anything previously open on this road that no longer
+            # holds, so a genuine recurrence is reported again later.
+            for stale in [k for (sid, k) in self._open if sid == seg.id and k != kind]:
+                self._open.discard((seg.id, stale))
+
+            if kind is None:
+                continue
+            if (seg.id, kind) in self._open:
+                continue
+            self._open.add((seg.id, kind))
+            self.anomaly_count += 1
+            self.anomalies.append(
+                TwinAnomaly(
+                    tick=tick,
+                    segment_id=seg.id,
+                    kind=kind,
+                    replica_occupancy=round(twin.occupancy, 3),
+                    physical_occupancy=round(seg.occupancy, 3),
+                    gap=round(abs(twin.occupancy - seg.occupancy), 3),
+                )
+            )
+            if len(self.anomalies) > ANOMALY_HISTORY_LIMIT:
+                self.anomalies.pop(0)
+
     def sync(self, tick: int) -> None:
         """Pull the live road state into the replica. Each synced segment
         costs uplink bandwidth, which is why real deployments sync at a
         bounded rate rather than continuously."""
+        self._measure(tick)
         for seg in self.grid.all_segments():
             twin = self.state[seg.id]
             twin.occupancy = seg.occupancy
@@ -76,4 +164,6 @@ class DigitalTwin:
             "kilobytes_synced": round(self.bytes_synced / 1024, 2),
             "congested_segments": len(self.congested_segments()),
             "tracked_segments": len(self.state),
+            "anomaly_count": self.anomaly_count,
+            "anomalies": [a.__dict__ for a in self.anomalies[-12:]],
         }
