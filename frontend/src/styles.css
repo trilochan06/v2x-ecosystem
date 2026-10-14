@@ -1724,3 +1724,97 @@ button.layer.open { border-color: var(--accent); background: #13243a; }
 .pov-invite button {
   margin-top: 0.5rem;
 }
+
+/* ------------------------------------------------------ twin what-if */
+.whatif__options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.7rem;
+}
+
+.whatif__options button {
+  font-size: 0.78rem;
+  padding: 0.28rem 0.55rem;
+}
+
+.whatif__result {
+  margin-top: 0.9rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--border, rgba(127, 127, 127, 0.25));
+}
+
+.whatif__result h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.whatif__figures {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+  gap: 0.45rem 0.7rem;
+  margin: 0.7rem 0 0;
+}
+
+.whatif__figures dt {
+  font-size: 0.66rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.6;
+}
+
+.whatif__figures dd {
+  margin: 0;
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.is-worse { color: #d64541; }
+.is-better { color: #34a853; }
+
+.whatif__subhead {
+  margin: 0.9rem 0 0.35rem;
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.6;
+}
+
+.whatif__roads {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+}
+
+.whatif__roads li {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 0.5rem;
+  align-items: baseline;
+  font-variant-numeric: tabular-nums;
+}
+
+.whatif__road {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.whatif__confidence {
+  margin-top: 0.7rem;
+  opacity: 0.75;
+}
+
+.whatif__apply {
+  margin-top: 0.6rem;
+}
+
+.whatif__applied {
+  margin-top: 0.6rem;
+  color: #34a853;
+  font-weight: 600;
+}

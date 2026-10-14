@@ -8,6 +8,7 @@
 import { useEffect, useState } from "react";
 import { CONFIGS, SimulationEngine } from "./engine";
 import type { VehicleKind } from "./agents";
+import type { Intervention } from "./whatif";
 import type { SimulationState } from "../types";
 
 export const TICK_INTERVAL_MS = 800;
@@ -193,6 +194,14 @@ export const commands = {
   /** The driver's view for one vehicle, or null if it has left the city.
    *  Read-only: polling this never advances or disturbs the simulation. */
   pov: (vehicleId: string) => engine.pov(vehicleId),
+  /** Preview an intervention on the twin. Read-only: the city does not move. */
+  whatIf: (intervention: Intervention) => engine.whatIf(intervention),
+  /** Commit a previewed intervention to the live city. */
+  applyIntervention: (intervention: Intervention) => {
+    const ok = engine.applyIntervention(intervention);
+    publish();
+    return ok;
+  },
   injectHazard: () => {
     const segmentId = engine.injectHazard();
     publish();

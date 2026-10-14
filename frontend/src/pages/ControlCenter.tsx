@@ -5,6 +5,7 @@ import { CityMap } from "../components/CityMap";
 import { DEFAULT_LAYERS, LAYER_LABELS, UNEQUIPPED_KINDS, VEHICLE_STYLE } from "../components/map/mapStyle";
 import { FleetLegend } from "../components/FleetLegend";
 import { PovView } from "../components/PovView";
+import { TwinWhatIf } from "../components/TwinWhatIf";
 import { isEmergency } from "../sim/agents";
 import type { VehicleKind } from "../sim/agents";
 import type { MapLayers } from "../components/map/mapStyle";
@@ -312,6 +313,8 @@ export function ControlCenter() {
             )
           )}
           <FleetLegend />
+
+          <TwinWhatIf state={state} />
 
           <div className="panel">
             <h2>Digital twin (M8)</h2>

@@ -1242,27 +1242,119 @@ export class TrafficLight {
 }
 
 // --------------------------------------------------------- digital twin
+export interface TwinReplicaEntry {
+  occupancy: number;
+  confirmed: boolean;
+  lastSync: number;
+  /** Recent synced occupancies, oldest first. The forecast needs lags, and a
+   *  replica that only knows *now* cannot predict anything. */
+  history: number[];
+}
+
+export interface TwinAnomaly {
+  tick: number;
+  segmentId: string;
+  kind: "unmodelled_incident" | "phantom_incident" | "occupancy_drift";
+  replicaOccupancy: number;
+  physicalOccupancy: number;
+  gap: number;
+}
+
+/** How far one road's replica may sit from truth before it is called out
+ *  individually rather than absorbed into the mean. */
+const SEGMENT_DRIFT_THRESHOLD = 0.35;
+const TWIN_HISTORY_LIMIT = 16;
+const TWIN_ANOMALY_LIMIT = 60;
+
 export class DigitalTwin {
-  private state = new Map<string, { occupancy: number; confirmed: boolean; lastSync: number }>();
+  private state = new Map<string, TwinReplicaEntry>();
   syncCount = 0;
   lastSyncTick = -1;
   bytesSynced = 0;
+  anomalies: TwinAnomaly[] = [];
+  anomalyCount = 0;
+  /** Conditions already reported and not yet resolved. Without this a hazard
+   *  raises the same anomaly on every sync for as long as it lasts. */
+  private open = new Set<string>();
 
   constructor(private grid: CityGrid) {
     for (const seg of grid.allSegments())
-      this.state.set(seg.id, { occupancy: 0, confirmed: false, lastSync: -1 });
+      this.state.set(seg.id, { occupancy: 0, confirmed: false, lastSync: -1, history: [] });
+  }
+
+  /**
+   * Name the disagreement on one road, or null if there is none.
+   *
+   * Incident mismatches outrank occupancy drift because they are the more
+   * specific finding: a blocked road also drifts, and reporting the drift
+   * would name the symptom instead of the cause.
+   */
+  private classify(seg: Segment, replica: TwinReplicaEntry): TwinAnomaly["kind"] | null {
+    if (seg.hazardActive && !seg.confirmedIncident) return "unmodelled_incident";
+    if (seg.confirmedIncident && !seg.hazardActive) return "phantom_incident";
+    if (Math.abs(replica.occupancy - seg.occupancy) >= SEGMENT_DRIFT_THRESHOLD)
+      return "occupancy_drift";
+    return null;
+  }
+
+  /** Compare replica against physical truth, before the sync overwrites the
+   *  evidence. The twin is the one component entitled to read ground truth,
+   *  because measuring its own error is the reason it exists. */
+  private measure(tick: number) {
+    for (const seg of this.grid.allSegments()) {
+      const replica = this.state.get(seg.id);
+      if (!replica) continue;
+      const kind = this.classify(seg, replica);
+      for (const other of ["unmodelled_incident", "phantom_incident", "occupancy_drift"] as const)
+        if (other !== kind) this.open.delete(`${seg.id}:${other}`);
+      if (!kind) continue;
+      const key = `${seg.id}:${kind}`;
+      if (this.open.has(key)) continue;
+      this.open.add(key);
+      this.anomalyCount += 1;
+      this.anomalies.push({
+        tick,
+        segmentId: seg.id,
+        kind,
+        replicaOccupancy: Math.round(replica.occupancy * 1000) / 1000,
+        physicalOccupancy: Math.round(seg.occupancy * 1000) / 1000,
+        gap: Math.round(Math.abs(replica.occupancy - seg.occupancy) * 1000) / 1000,
+      });
+      if (this.anomalies.length > TWIN_ANOMALY_LIMIT) this.anomalies.shift();
+    }
   }
 
   sync(tick: number) {
-    for (const seg of this.grid.allSegments())
+    this.measure(tick);
+    for (const seg of this.grid.allSegments()) {
+      const previous = this.state.get(seg.id);
+      const history = [...(previous?.history ?? []), seg.occupancy].slice(-TWIN_HISTORY_LIMIT);
       this.state.set(seg.id, {
         occupancy: seg.occupancy,
         confirmed: seg.confirmedIncident,
         lastSync: tick,
+        history,
       });
+    }
     this.syncCount += 1;
     this.lastSyncTick = tick;
     this.bytesSynced += 12 * this.state.size;
+  }
+
+  /** The replica as segments a model can be run over. Deliberately copies —
+   *  a what-if that mutated these would be editing the live road network. */
+  replicaSegments(): Segment[] {
+    const out: Segment[] = [];
+    for (const seg of this.grid.allSegments()) {
+      const replica = this.state.get(seg.id);
+      if (!replica) continue;
+      const shadow = new Segment(seg.id, seg.a, seg.b, seg.lengthM, seg.speedLimitKmh);
+      shadow.occupancy = replica.occupancy;
+      shadow.confirmedIncident = replica.confirmed;
+      shadow.history = [...replica.history];
+      out.push(shadow);
+    }
+    return out;
   }
 
   /** Mean absolute error between the replica and physical reality. */
@@ -1283,6 +1375,8 @@ export class DigitalTwin {
       kilobytes_synced: Math.round((this.bytesSynced / 1024) * 100) / 100,
       congested_segments: [...this.state.values()].filter((s) => s.occupancy >= 0.7).length,
       tracked_segments: this.state.size,
+      anomaly_count: this.anomalyCount,
+      anomalies: this.anomalies.slice(-12),
     };
   }
 }

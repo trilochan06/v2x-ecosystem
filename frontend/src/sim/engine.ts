@@ -1,7 +1,9 @@
 /** Metrics, architecture configs, and the tick orchestration.
  *  Ported from `backend/app/metrics.py`, `config.py`, `simulation/engine.py`. */
-import { CongestionPredictor, FederatedCoordinator } from "./ai";
+import { CongestionPredictor, FederatedCoordinator, PREDICTION_HORIZON_TICKS } from "./ai";
 import { buildPov } from "./pov";
+import { INTERVENTION_LABEL, runWhatIf } from "./whatif";
+import type { Intervention, WhatIfResult } from "./whatif";
 import type { PovState } from "./pov";
 import {
   AlertEngine,
@@ -1459,6 +1461,38 @@ export class SimulationEngine {
     }
     this.recomputeOccupancy();
     this.replayGuard.prune(this.tick);
+  }
+
+  /**
+   * Run an intervention against the twin's replica and report what the
+   * congestion model expects it to do. Changes nothing: the city only moves
+   * if the viewer then applies it.
+   */
+  whatIf(intervention: Intervention, horizonTicks = PREDICTION_HORIZON_TICKS): WhatIfResult {
+    return runWhatIf(this.twin, this.grid, this.predictor, this.tick, intervention, horizonTicks);
+  }
+
+  /** Commit a previewed intervention to the live city. */
+  applyIntervention(intervention: Intervention): boolean {
+    if (intervention.kind === "rain" || intervention.kind === "fog") {
+      const hazard = intervention.kind === "rain" ? "waterlogging" : "fog_bank";
+      for (const seg of this.grid.allSegments()) seg.raiseHazard(hazard, 60, this.tick);
+      this.log(intervention.kind, `${INTERVENTION_LABEL(intervention)} — applied to the city.`);
+      return true;
+    }
+    const seg = this.grid.segments.get(intervention.segmentId);
+    if (!seg) return false;
+    if (intervention.kind === "close_road") {
+      seg.raiseHazard("roadworks", 80, this.tick);
+      this.log("close_road", `${roadName(seg.id)} closed.`, seg.id);
+    } else {
+      // Prefer a real collision between vehicles actually on that road, and
+      // fall back to raising the hazard alone when there is nobody to crash.
+      if (!this.triggerCollision(seg.id)) seg.raiseHazard("accident", 60, this.tick);
+      this.log("accident", `Accident staged on ${roadName(seg.id)}.`, seg.id);
+    }
+    this.metrics.hazardRaised(seg.id, this.tick);
+    return true;
   }
 
   /**
