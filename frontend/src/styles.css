@@ -1840,3 +1840,84 @@ button.layer.open { border-color: var(--accent); background: #13243a; }
   font-variant-numeric: tabular-nums;
   line-height: 1.1;
 }
+
+/* ---------------------------------------------------------- help panel */
+.help__log {
+  margin-top: 0.8rem;
+  max-height: 420px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+.help__empty {
+  margin: 0;
+}
+
+.help__q {
+  margin: 0 0 0.35rem;
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.help__a {
+  border-left: 3px solid var(--accent, #2e7d9a);
+  padding-left: 0.65rem;
+}
+
+.help__a h3 {
+  margin: 0 0 0.3rem;
+  font-size: 0.88rem;
+}
+
+.help__a p {
+  margin: 0 0 0.45rem;
+  font-size: 0.83rem;
+  line-height: 1.5;
+}
+
+.help__rule {
+  border: 0;
+  border-top: 1px solid var(--border, rgba(127, 127, 127, 0.25));
+  margin: 0.5rem 0;
+}
+
+.help__related,
+.help__suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.5rem;
+}
+
+.help__related button,
+.help__suggestions button {
+  font-size: 0.74rem;
+  padding: 0.22rem 0.5rem;
+  text-align: left;
+}
+
+.help__ask {
+  display: flex;
+  gap: 0.35rem;
+  margin-top: 0.7rem;
+}
+
+.help__ask input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-size: 0.84rem;
+  padding: 0.32rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid var(--border, #d6dbe3);
+  background: var(--panel, #fff);
+  color: inherit;
+}
+
+.help__clear {
+  margin-top: 0.5rem;
+  font-size: 0.74rem;
+  padding: 0.2rem 0.5rem;
+}

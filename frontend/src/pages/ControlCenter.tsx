@@ -6,6 +6,8 @@ import { DEFAULT_LAYERS, LAYER_LABELS, UNEQUIPPED_KINDS, VEHICLE_STYLE } from ".
 import { FleetLegend } from "../components/FleetLegend";
 import { PovView } from "../components/PovView";
 import { TwinWhatIf } from "../components/TwinWhatIf";
+import { HelpPanel } from "../components/HelpPanel";
+import type { PovAlert } from "../sim/pov";
 import { isEmergency } from "../sim/agents";
 import type { VehicleKind } from "../sim/agents";
 import type { MapLayers } from "../components/map/mapStyle";
@@ -26,6 +28,7 @@ export function ControlCenter() {
   const [selectedVehicle, setSelectedVehicle] = useState<string | null>(null);
   const [povMode, setPovMode] = useState(false);
   const [povSound, setPovSound] = useState(false);
+  const [explainAlert, setExplainAlert] = useState<PovAlert | null>(null);
   // Recomputed every publish, which is what keeps the HUD live. `pov` only
   // reads simulation state, so calling it on each render is free of effects.
   const pov = povMode && selectedVehicle ? commands.pov(selectedVehicle) : null;
@@ -295,6 +298,7 @@ export function ControlCenter() {
             <PovView
               pov={pov}
               onExit={() => setPovMode(false)}
+              onExplain={setExplainAlert}
               sound={povSound}
               onToggleSound={() => setPovSound((on) => !on)}
             />
@@ -312,6 +316,11 @@ export function ControlCenter() {
               </div>
             )
           )}
+          <HelpPanel
+            ctx={{ state, pov, alert: explainAlert }}
+            pendingAlert={explainAlert}
+            onAlertHandled={() => setExplainAlert(null)}
+          />
           <FleetLegend />
 
           <TwinWhatIf state={state} />
