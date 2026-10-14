@@ -1818,3 +1818,25 @@ button.layer.open { border-color: var(--accent); background: #13243a; }
   color: #34a853;
   font-weight: 600;
 }
+
+/* ------------------------------------------- centralized baseline panel */
+.central__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.9rem;
+  margin: 0.9rem 0;
+}
+
+.central__grid > div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.central__figure {
+  font-size: 1.5rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}

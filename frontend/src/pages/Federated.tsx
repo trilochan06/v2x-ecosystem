@@ -49,6 +49,55 @@ export function Federated() {
         <Stat label="Bandwidth ratio" value={savingRatio > 0 ? `${savingRatio.toFixed(0)}×` : "—"} />
       </div>
 
+      <section className="panel wide central">
+        <h2>What privacy costs, measured</h2>
+        <p className="muted small">
+          The honest question about federated learning is not whether it protects data &mdash; it
+          plainly does &mdash; but how much accuracy that protection costs. So every round also
+          fits the model the other way: one model, trained on every client&rsquo;s raw samples
+          pooled together, which is exactly what a centralized architecture would have built.
+          Same epochs, same learning rate, same trust weighting, so the only difference between
+          the two is pooling against averaging.
+        </p>
+        <div className="central__grid">
+          <div>
+            <span className="central__figure">{fed.current_loss.toFixed(4)}</span>
+            <span className="muted small">federated, data stays local</span>
+          </div>
+          <div>
+            <span className="central__figure">{fed.centralized_loss.toFixed(4)}</span>
+            <span className="muted small">centralized, raw data pooled</span>
+          </div>
+          <div>
+            <span
+              className={`central__figure ${fed.privacy_cost_pct > 0 ? "is-worse" : "is-better"}`}
+            >
+              {fed.privacy_cost_pct > 0 ? "+" : ""}
+              {fed.privacy_cost_pct.toFixed(2)}%
+            </span>
+            <span className="muted small">
+              {fed.privacy_cost_pct > 0 ? "accuracy given up" : "accuracy gained"}
+            </span>
+          </div>
+          <div>
+            <span className="central__figure">
+              {savingRatio > 0 ? `${savingRatio.toFixed(0)}\u00d7` : "\u2014"}
+            </span>
+            <span className="muted small">less on the wire</span>
+          </div>
+        </div>
+        <p className="small">
+          That is the trade in one line: {fed.privacy_cost_pct > 0 ? "giving up " : "gaining "}
+          <strong>{Math.abs(fed.privacy_cost_pct).toFixed(2)}%</strong> on validation error, in
+          return for {fed.total_raw_kilobytes_avoided.toFixed(0)} KB of vehicle observations never
+          leaving the roadside units that collected them &mdash; only{" "}
+          {fed.total_weights_kilobytes.toFixed(2)} KB of model parameters crossed the network.
+          A centralized design has to move the observations themselves, and once they have moved
+          they can be correlated, retained and subpoenaed; parameters cannot be turned back into
+          the trips that produced them.
+        </p>
+      </section>
+
       <section className="panel wide">
         <ConvergenceLine
           title="Global model loss by federated round"

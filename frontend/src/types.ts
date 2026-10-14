@@ -135,6 +135,8 @@ export interface FederatedRound {
   avg_client_drift: number;
   /** What plain FedAvg would have produced, so the defence is measured. */
   plain_fedavg_loss: number;
+  /** What one model trained on every client's pooled raw samples scores. */
+  centralized_loss: number;
   mean_client_trust: number;
   excluded_clients: string[];
 }
@@ -150,6 +152,11 @@ export interface FederatedState {
   latest_round: FederatedRound | null;
   history: FederatedRound[];
   plain_fedavg_loss: number;
+  /** The privacy-violating alternative's loss, for the headline comparison. */
+  centralized_loss: number;
+  /** How much accuracy federation gives up against it, as a percentage of
+   *  the centralized loss. Negative means federation is ahead. */
+  privacy_cost_pct: number;
   trust_weighting_gain_pct: number;
   mean_client_trust: number;
   excluded_clients: string[];

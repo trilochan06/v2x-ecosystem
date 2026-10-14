@@ -236,6 +236,20 @@ export class FederatedClient {
     this.buffer = [];
   }
 
+  /**
+   * The local buffer, for the centralized counterfactual only.
+   *
+   * Nothing in the network calls this, and nothing may: the whole claim of
+   * the design is that these samples never leave the roadside. It exists so
+   * the harness can train the model that *would* have been trained had they
+   * been uploaded, and report what federation costs against it. The same
+   * device as the plain-FedAvg shadow — measure the alternative rather than
+   * assert it is worse.
+   */
+  bufferForCounterfactual(): readonly { x: number[]; y: number; trust: number }[] {
+    return this.buffer;
+  }
+
   predictOne(x: number[]) {
     return clamp01(predictLinear(this.weights, x));
   }
@@ -254,6 +268,9 @@ export interface RoundSummary {
   avg_client_drift: number;
   /** What plain FedAvg would have produced, so the defence is measured. */
   plain_fedavg_loss: number;
+  /** What one model trained on every client's pooled raw samples scores —
+   *  the privacy-violating alternative, measured rather than assumed. */
+  centralized_loss: number;
   mean_client_trust: number;
   excluded_clients: string[];
 }
@@ -262,6 +279,10 @@ export class FederatedCoordinator {
   globalWeights: Weights = zeroWeights();
   /** Shadow model aggregated by plain FedAvg, for comparison only. */
   plainWeights: Weights = zeroWeights();
+  /** The counterfactual: one model fitted on every client's raw samples
+   *  pooled together, which is what a centralized architecture would have
+   *  built. Never used to serve a prediction; it exists to be compared. */
+  centralWeights: Weights = zeroWeights();
   rounds: RoundSummary[] = [];
   initialLoss: number;
   private lastLoss: number;
@@ -296,6 +317,30 @@ export class FederatedCoordinator {
     return { w, b };
   }
 
+  /** One pass of the same gradient descent a client runs, over pooled data.
+   *  Starts from the current centralized model so it accumulates across
+   *  rounds exactly as the federated one does. */
+  private trainCentral(pooled: readonly { x: number[]; y: number; trust: number }[]): Weights {
+    const n = pooled.length;
+    const w = [...this.centralWeights.w];
+    let b = this.centralWeights.b;
+    const trustSum = pooled.reduce((a, s2) => a + s2.trust, 0);
+    const trustMean = trustSum > 0 ? trustSum / n : 1;
+
+    for (let epoch = 0; epoch < LOCAL_EPOCHS; epoch++) {
+      const grad = new Array(FEATURE_DIM).fill(0);
+      let gradB = 0;
+      for (const { x, y, trust } of pooled) {
+        const err = (predictLinear({ w, b }, x) - y) * (trustSum > 0 ? trust / trustMean : 1);
+        for (let i = 0; i < FEATURE_DIM; i++) grad[i] += err * x[i];
+        gradB += err;
+      }
+      for (let i = 0; i < FEATURE_DIM; i++) w[i] -= (LEARNING_RATE * grad[i]) / n;
+      b -= (LEARNING_RATE * gradB) / n;
+    }
+    return { w, b };
+  }
+
   runRound(clients: FederatedClient[], tick: number): RoundSummary | null {
     const uploads: { id: string; weights: Weights; n: number; trust: number }[] = [];
     for (const c of clients) {
@@ -323,6 +368,14 @@ export class FederatedCoordinator {
       admitted = uploads.map((u) => ({ id: u.id, weights: u.weights, weight: u.n }));
       excluded = [];
     }
+
+    // The centralized counterfactual, trained before the buffers are cleared.
+    // Identical epochs, learning rate and trust weighting to a client's local
+    // pass, so the only difference between this and the federated model is
+    // pooling versus averaging — otherwise the comparison would be measuring
+    // the optimiser rather than federation.
+    const pooled = clients.flatMap((c) => [...c.bufferForCounterfactual()]);
+    if (pooled.length) this.centralWeights = this.trainCentral(pooled);
 
     this.globalWeights = this.average(admitted);
     // The shadow model: what plain FedAvg would have produced. Kept so the
@@ -353,6 +406,7 @@ export class FederatedCoordinator {
       raw_kilobytes_avoided: (total * RAW_SAMPLE_BYTES) / 1024,
       avg_client_drift: drifts.length ? drifts.reduce((a, x) => a + x, 0) / drifts.length : 0,
       plain_fedavg_loss: round6(this.loss(this.plainWeights)),
+      centralized_loss: round6(this.loss(this.centralWeights)),
       mean_client_trust: uploads.reduce((a, u) => a + u.trust, 0) / uploads.length,
       excluded_clients: excluded,
     };
@@ -371,6 +425,7 @@ export class FederatedCoordinator {
   snapshot() {
     const latest = this.rounds[this.rounds.length - 1] ?? null;
     const plainLoss = this.loss(this.plainWeights);
+    const centralLoss = this.loss(this.centralWeights);
     return {
       rounds_completed: this.rounds.length,
       initial_loss: round6(this.initialLoss),
@@ -387,6 +442,13 @@ export class FederatedCoordinator {
       // The trust-weighting comparison, kept alongside the headline so the
       // defence is shown working rather than asserted.
       plain_fedavg_loss: round6(plainLoss),
+      // The headline comparison: what the same model costs when the data is
+      // pooled instead of kept local. Positive means federation gave up
+      // accuracy for privacy; negative means it did not.
+      centralized_loss: round6(centralLoss),
+      privacy_cost_pct: centralLoss
+        ? Math.round(((this.lastLoss - centralLoss) / centralLoss) * 10000) / 100
+        : 0,
       trust_weighting_gain_pct: plainLoss
         ? Math.round((1 - this.lastLoss / plainLoss) * 10000) / 100
         : 0,
