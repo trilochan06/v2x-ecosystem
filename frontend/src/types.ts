@@ -15,7 +15,19 @@ export interface SegmentState {
 export interface VehicleState {
   id: string;
   pseudonym: string;
-  kind: "car" | "ambulance" | "malicious";
+  /** Mirrors `VehicleKind` in `sim/agents.ts`. Kept as a literal union rather
+   *  than imported so this file stays a description of the wire format. */
+  kind:
+    | "car"
+    | "ambulance"
+    | "fire"
+    | "police"
+    | "malicious"
+    | "bus"
+    | "truck"
+    | "rickshaw"
+    | "motorbike"
+    | "bicycle";
   x: number;
   y: number;
   node: string;

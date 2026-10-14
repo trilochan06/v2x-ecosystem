@@ -7,6 +7,7 @@ import { FleetLegend } from "../components/FleetLegend";
 import { PovView } from "../components/PovView";
 import { TwinWhatIf } from "../components/TwinWhatIf";
 import { HelpPanel } from "../components/HelpPanel";
+import { ConditionsPanel } from "../components/ConditionsPanel";
 import type { PovAlert } from "../sim/pov";
 import { isEmergency } from "../sim/agents";
 import type { VehicleKind } from "../sim/agents";
@@ -323,6 +324,7 @@ export function ControlCenter() {
           />
           <FleetLegend />
 
+          <ConditionsPanel state={state} pov={pov} />
           <TwinWhatIf state={state} />
 
           <div className="panel">
