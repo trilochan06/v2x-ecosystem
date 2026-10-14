@@ -28,7 +28,7 @@ export function HelpPanel({
 }) {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [draft, setDraft] = useState("");
-  const endRef = useRef<HTMLDivElement | null>(null);
+  const logRef = useRef<HTMLDivElement | null>(null);
 
   const push = (question: string, answer: Answer) => setTurns((t) => [...t, { question, answer }]);
 
@@ -42,8 +42,15 @@ export function HelpPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingAlert]);
 
+  // Scroll the transcript, not the page. `scrollIntoView` walks up and moves
+  // every scrollable ancestor, so on mount it dragged the whole Control
+  // Center down and left the map off-screen — which the end-to-end pass
+  // caught as the mouse wheel no longer zooming, because the wheel event was
+  // landing on nothing at all.
   useEffect(() => {
-    endRef.current?.scrollIntoView({ block: "nearest" });
+    if (!turns.length) return;
+    const log = logRef.current;
+    if (log) log.scrollTop = log.scrollHeight;
   }, [turns.length]);
 
   const submit = (question: string) => {
@@ -66,7 +73,7 @@ export function HelpPanel({
         rather than guess.
       </p>
 
-      <div className="help__log">
+      <div className="help__log" ref={logRef}>
         {turns.length === 0 && (
           <p className="muted small help__empty">
             Ask something, or pick a question below. In a vehicle view, &ldquo;Explain this&rdquo;
@@ -93,7 +100,6 @@ export function HelpPanel({
             </div>
           </div>
         ))}
-        <div ref={endRef} />
       </div>
 
       <form
