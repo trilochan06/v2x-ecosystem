@@ -339,6 +339,35 @@ export function ControlCenter() {
               Divergence is the mean gap between the replica and the physical road state. It grows whenever
               synchronization is disabled or the uplink is severed.
             </p>
+
+            <h3 className="twin-anom__head">
+              Where the replica and the road disagree
+              {state.digital_twin.anomaly_count > 0 && (
+                <span className="twin-anom__count">{state.digital_twin.anomaly_count}</span>
+              )}
+            </h3>
+            {state.digital_twin.anomalies.length === 0 ? (
+              <p className="muted small">
+                Belief and reality agree on every road right now. Inject a hazard and watch the twin
+                notice it before the network corroborates it.
+              </p>
+            ) : (
+              <ul className="twin-anom">
+                {state.digital_twin.anomalies.slice(-5).reverse().map((a) => (
+                  <li key={`${a.segmentId}-${a.kind}-${a.tick}`} className={`twin-anom--${a.kind}`}>
+                    <span className="twin-anom__kind">{a.kind.replace(/_/g, " ")}</span>
+                    <span className="muted">
+                      {a.segmentId} · tick {a.tick} · gap {a.gap.toFixed(2)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p className="muted small">
+              An <em>unmodelled incident</em> is a real hazard nobody corroborated &mdash; the network is
+              blind to something. A <em>phantom</em> is a confirmation with nothing behind it, which is
+              what a successful injection looks like from outside.
+            </p>
           </div>
 
           {state.signal_priority.requested > 0 && (

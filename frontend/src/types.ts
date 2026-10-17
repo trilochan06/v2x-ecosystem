@@ -315,6 +315,18 @@ export interface SimulationState {
     kilobytes_synced: number;
     congested_segments: number;
     tracked_segments: number;
+    /** Roads where the replica and the physical road disagree. The twin is
+     *  the one component entitled to compare the two, which is what lets it
+     *  double as a detector. */
+    anomaly_count: number;
+    anomalies: {
+      tick: number;
+      segmentId: string;
+      kind: "unmodelled_incident" | "phantom_incident" | "occupancy_drift";
+      replicaOccupancy: number;
+      physicalOccupancy: number;
+      gap: number;
+    }[];
   };
   alerts: {
     alerts_raised: number;

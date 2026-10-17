@@ -1950,3 +1950,53 @@ button.layer.open { border-color: var(--accent); background: #13243a; }
   background: rgba(46, 155, 98, 0.1);
   border-radius: 0 5px 5px 0;
 }
+
+/* ------------------------------------------------ twin anomaly readout */
+.twin-anom__head {
+  margin: 0.9rem 0 0.35rem;
+  font-size: 0.74rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.65;
+}
+
+.twin-anom__count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 0.25rem;
+  margin-left: 0.35rem;
+  border-radius: 9px;
+  background: #d98324;
+  color: #fff;
+  font-size: 0.66rem;
+}
+
+.twin-anom {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+}
+
+.twin-anom li {
+  display: flex;
+  gap: 0.45rem;
+  align-items: baseline;
+  flex-wrap: wrap;
+  border-left: 3px solid currentColor;
+  padding-left: 0.5rem;
+}
+
+.twin-anom--unmodelled_incident { color: #d64541; }
+.twin-anom--phantom_incident { color: #9b59d0; }
+.twin-anom--occupancy_drift { color: #d98324; }
+
+.twin-anom__kind {
+  font-weight: 600;
+  text-transform: capitalize;
+}
